@@ -40,7 +40,7 @@ For unattended installs, pass `--yes`:
 curl -fsSL https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.sh | bash -s -- --yes
 ```
 
-The installer uses `pipx`, checks Git, and offers a simple numbered AI setup. You can choose Codex CLI, OpenAI, Gemini, OpenRouter, or skip AI setup. If you paste an API key during install, it is saved to your user shell environment; the app config stores only provider/model defaults. The installer then offers to launch `git-standup wizard`.
+The installer uses `pipx`, checks Git, and offers a simple numbered AI setup. You can choose Codex CLI, OpenAI, Gemini, OpenRouter, or skip AI setup. If you paste an API key during install, it is saved to your user shell environment; the app config stores only provider/model defaults. The installer then offers to launch `git-standup wizard`. The wizard checks for a newer GitHub version and asks before updating.
 
 Manual install:
 
@@ -69,6 +69,12 @@ On an interactive terminal, the bare command opens a guided command builder that
 ```bash
 git-standup
 git-standup wizard
+```
+
+Update to the latest GitHub version at any time:
+
+```bash
+git-standup update
 ```
 
 To force the previous immediate default report from an interactive shell, use:
@@ -230,7 +236,7 @@ usage: git-standup [-h] [--days DAYS] [--repo REPO]
 
 options:
   command|preset|repo  Optional command or preset: wizard, config, me, week,
-                       branch; or a repository path.
+                       branch, update; or a repository path.
   --days DAYS          Number of days of Git history to include. Must be positive.
   --repo PATH          Path to the Git repository to analyze.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.

@@ -1,10 +1,15 @@
 """CLI entry point for git-standup."""
 
 import argparse
+import importlib.metadata
+import json
 import os
 import re
 import shlex
+import shutil
+import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +32,18 @@ from git_standup.gitlog import (
     group_by_author,
     group_by_date,
 )
+
+APP_NAME = "git-standup"
+DIST_NAME = "git-standup"
+REPO_URL = "https://github.com/Tresnanda/git-standup.git"
+REPO_SPEC = f"git+{REPO_URL}"
+
+
+@dataclass
+class UpdateCheck:
+    available: bool
+    current_commit: str | None = None
+    latest_commit: str | None = None
 
 
 def _build_commit_data(
@@ -82,6 +99,84 @@ def _write_output(text: str, output_path: str | None) -> bool:
         return False
     Path(output_path).write_text(text, encoding="utf-8")
     return True
+
+
+def _pipx_update_command() -> list[str]:
+    pipx = shutil.which("pipx")
+    if pipx:
+        return [pipx, "install", "--force", REPO_SPEC]
+    return [sys.executable, "-m", "pipx", "install", "--force", REPO_SPEC]
+
+
+def run_update() -> int:
+    """Install the latest git-standup from GitHub via pipx."""
+    print(f"Updating {APP_NAME} from GitHub...")
+    try:
+        subprocess.run(_pipx_update_command(), check=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"Update failed with exit code {exc.returncode}.", file=sys.stderr)
+        return exc.returncode or 1
+    print(f"{APP_NAME} updated. Run `{APP_NAME}` again to use the latest version.")
+    return 0
+
+
+def _installed_git_commit() -> str | None:
+    try:
+        distribution = importlib.metadata.distribution(DIST_NAME)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+    for file in distribution.files or []:
+        if str(file).endswith("direct_url.json"):
+            try:
+                data = json.loads(distribution.locate_file(file).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            commit = data.get("vcs_info", {}).get("commit_id")
+            return commit if isinstance(commit, str) else None
+    return None
+
+
+def _latest_git_commit(timeout: float = 3.0) -> str | None:
+    git = shutil.which("git")
+    if not git:
+        return None
+    try:
+        result = subprocess.run(
+            [git, "ls-remote", REPO_URL, "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.strip().split()
+    return fields[0] if fields else None
+
+
+def check_for_update() -> UpdateCheck:
+    """Best-effort update check for pipx installs from GitHub."""
+    if os.environ.get("GIT_STANDUP_SKIP_UPDATE_CHECK"):
+        return UpdateCheck(available=False)
+    current_commit = _installed_git_commit()
+    latest_commit = _latest_git_commit()
+    if not current_commit or not latest_commit:
+        return UpdateCheck(False, current_commit, latest_commit)
+    return UpdateCheck(current_commit != latest_commit, current_commit, latest_commit)
+
+
+def prompt_for_update_if_available() -> bool:
+    """Prompt in interactive flows. Return True when an update was attempted."""
+    check = check_for_update()
+    if not check.available:
+        return False
+    if Confirm.ask(f"New {APP_NAME} update found. Update now?", default=False):
+        run_update()
+        return True
+    return False
 
 
 def build_wizard_args(answers: dict[str, object]) -> list[str]:
@@ -259,6 +354,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup wizard              # Build the right command interactively\n"
         "  git-standup config              # Choose saved AI defaults\n"
         "  git-standup config show         # Show saved AI defaults\n"
+        "  git-standup update              # Update git-standup from GitHub\n"
         "  git-standup                     # Last 7 days, all contributors\n"
         "  git-standup me                  # My commits, no AI required\n"
         "  git-standup branch              # Current branch vs main, no AI required\n"
@@ -280,7 +376,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "tokens",
         nargs="*",
-        help="Optional command, preset (wizard, config, me, week, branch), or repository path",
+        help=(
+            "Optional command, preset (wizard, config, update, me, week, branch), "
+            "or repository path"
+        ),
     )
     parser.add_argument(
         "--days",
@@ -391,6 +490,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             args.command = "wizard"
             if tokens:
                 parser.error("wizard does not accept extra arguments")
+        elif target == "update":
+            args.command = "update"
+            if tokens:
+                parser.error("update does not accept extra arguments")
         elif target == "config":
             args.command = "config"
             args.config_action = tokens.pop(0) if tokens else "interactive"
@@ -423,12 +526,17 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(argv)
 
+    if args.command == "update":
+        return run_update()
+
     if args.command == "wizard" or (
         not raw_argv
         and not args.no_wizard
         and sys.stdin.isatty()
         and sys.stdout.isatty()
     ):
+        if prompt_for_update_if_available():
+            return 0
         return run_wizard()
 
     if args.command == "config":
