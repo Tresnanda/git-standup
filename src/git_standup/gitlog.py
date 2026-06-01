@@ -4,19 +4,23 @@ import re
 import subprocess
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 
-def get_repo_root() -> str:
+def get_repo_root(repo_path: str | None = None) -> str:
     """Get the root directory of the current git repository.
 
     Raises:
         RuntimeError: if not in a git repository.
     """
+    cmd = ["git"]
+    if repo_path:
+        cmd.extend(["-C", repo_path])
+    cmd.extend(["rev-parse", "--show-toplevel"])
+
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            cmd,
             capture_output=True,
             text=True,
             check=True,
@@ -33,14 +37,17 @@ def get_commits(
     days: int = 7,
     author: str | None = None,
     base_branch: str | None = None,
+    repo_path: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for the last N days.
 
     Returns a list of commit dicts with keys:
         hash, author_name, author_email, date, message, files, insertions, deletions.
     """
-    repo_root = get_repo_root()
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
+    repo_root = get_repo_root(repo_path)
+    since_arg = since or (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
         "%Y-%m-%dT%H:%M:%S"
     )
 
@@ -60,10 +67,13 @@ def get_commits(
         "-C",
         repo_root,
         "log",
-        f"--since={since}",
+        f"--since={since_arg}",
         f"--pretty=format:{fmt}",
         "--numstat",
     ]
+
+    if until:
+        cmd.insert(5, f"--until={until}")
 
     if base_branch:
         cmd.extend([f"{base_branch}..HEAD"])
@@ -71,7 +81,7 @@ def get_commits(
     if author:
         if author == "me":
             # Get current user's name and email
-            author = _get_current_user()
+            author = _get_current_user(repo_root)
         cmd.extend([f"--author={author}"])
 
     try:
@@ -88,11 +98,15 @@ def get_commits(
     return _parse_log_output(result.stdout)
 
 
-def _get_current_user() -> str:
+def _get_current_user(repo_root: str | None = None) -> str:
     """Get the current git user (name or email)."""
+    cmd = ["git"]
+    if repo_root:
+        cmd.extend(["-C", repo_root])
+    cmd.extend(["config", "user.name"])
     try:
         name = subprocess.run(
-            ["git", "config", "user.name"],
+            cmd,
             capture_output=True,
             text=True,
             check=True,
@@ -108,14 +122,19 @@ def _parse_log_output(raw: str) -> list[dict[str, Any]]:
     commits: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     current_files: list[dict[str, Any]] = []
+    reading_body = False
+    body_lines: list[str] = []
 
     for line in raw.splitlines():
         if line == "---COMMIT---":
             if current is not None:
+                current["body"] = "\n".join(body_lines).strip()
                 current["files"] = _aggregate_files(current_files)
                 commits.append(current)
             current = {}
             current_files = []
+            reading_body = False
+            body_lines = []
         elif current is not None:
             if line.startswith("hash:"):
                 current["hash"] = line[5:].strip()
@@ -128,8 +147,10 @@ def _parse_log_output(raw: str) -> list[dict[str, Any]]:
             elif line.startswith("subject:"):
                 current["subject"] = line[8:].strip()
             elif line.startswith("body:"):
-                current["body"] = line[5:].strip()
-            elif re.match(r"^\d+\s+\d+\s+\S", line):
+                reading_body = True
+                body_lines = [line[5:].strip()] if line[5:].strip() else []
+            elif re.match(r"^(?:\d+|-)\s+(?:\d+|-)\s+\S", line):
+                reading_body = False
                 # numstat line: insertions deletions filepath
                 parts = line.split("\t")
                 if len(parts) == 3:
@@ -142,9 +163,12 @@ def _parse_log_output(raw: str) -> list[dict[str, Any]]:
                             "deletions": deletions,
                         }
                     )
+            elif reading_body:
+                body_lines.append(line)
 
     # Don't forget the last commit
     if current is not None:
+        current["body"] = "\n".join(body_lines).strip()
         current["files"] = _aggregate_files(current_files)
         commits.append(current)
 

@@ -1,13 +1,17 @@
 """CLI entry point for git-standup."""
 
 import argparse
+import re
 import sys
+from pathlib import Path
 from typing import Any
 
 from git_standup import __version__
 from git_standup.ai import generate_standup
 from git_standup.formatter import (
     build_json_output,
+    build_markdown_output,
+    build_text_output,
     print_ai_standup,
     print_text_standup,
 )
@@ -48,6 +52,32 @@ def _build_commit_data(
     return result
 
 
+def _positive_int(value: str) -> int:
+    """Parse a positive integer for CLI arguments."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _date_string(value: str) -> str:
+    """Parse an ISO date string for exact report windows."""
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
+        raise argparse.ArgumentTypeError("must use YYYY-MM-DD")
+    return value
+
+
+def _write_output(text: str, output_path: str | None) -> bool:
+    """Write text to output_path when provided. Return True when handled."""
+    if output_path is None:
+        return False
+    Path(output_path).write_text(text, encoding="utf-8")
+    return True
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -57,9 +87,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         epilog="Examples:\n"
         "  git-standup                     # Last 7 days, all contributors\n"
         "  git-standup --days 1            # Yesterday only\n"
+        "  git-standup --repo ../api       # Run against another repository\n"
+        "  git-standup --since 2026-01-01 --until 2026-01-07\n"
         "  git-standup --author me         # My commits only\n"
         "  git-standup --no-ai             # Text summary without LLM\n"
+        "  git-standup --markdown          # Markdown summary without LLM\n"
         "  git-standup --json              # Raw JSON output\n"
+        "  git-standup --markdown --output standup.md\n"
         "  git-standup --api-key sk-...    # Custom API key\n"
         "  git-standup --model gpt-4       # Custom model\n"
         "  git-standup --base-url https://api.openai.com/v1  # Custom endpoint",
@@ -68,9 +102,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--days",
-        type=int,
+        type=_positive_int,
         default=7,
         help="Number of days of git history to include (default: 7)",
+    )
+    parser.add_argument(
+        "--repo",
+        type=str,
+        default=None,
+        help="Path to the git repository to analyze (default: current directory)",
+    )
+    parser.add_argument(
+        "--since",
+        type=_date_string,
+        default=None,
+        help="Start date for the report window (YYYY-MM-DD). Overrides --days.",
+    )
+    parser.add_argument(
+        "--until",
+        type=_date_string,
+        default=None,
+        help="End date for the report window (YYYY-MM-DD).",
     )
     parser.add_argument(
         "--author",
@@ -94,6 +146,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--no-ai",
         action="store_true",
         help="Output formatted text summary without AI",
+    )
+    parser.add_argument(
+        "--markdown",
+        action="store_true",
+        help="Output a paste-ready Markdown summary without AI",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Write the generated JSON, Markdown, text, or AI summary to a file",
     )
     parser.add_argument(
         "--api-key",
@@ -131,6 +194,9 @@ def main(argv: list[str] | None = None) -> int:
             days=args.days,
             author=args.author,
             base_branch=args.base_branch,
+            repo_path=args.repo,
+            since=args.since,
+            until=args.until,
         )
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -143,11 +209,20 @@ def main(argv: list[str] | None = None) -> int:
     commit_data = _build_commit_data(commits)
 
     if args.json:
-        print(build_json_output(commit_data))
+        output = build_json_output(commit_data)
+        if not _write_output(output + "\n", args.output):
+            print(output)
         return 0
 
     if args.no_ai:
-        print_text_standup(commit_data)
+        if not _write_output(build_text_output(commit_data), args.output):
+            print_text_standup(commit_data)
+        return 0
+
+    if args.markdown:
+        output = build_markdown_output(commit_data)
+        if not _write_output(output, args.output):
+            print(output, end="")
         return 0
 
     # AI mode
@@ -164,10 +239,12 @@ def main(argv: list[str] | None = None) -> int:
             f"Warning: AI generation failed ({exc}). Showing text summary instead.\n",
             file=sys.stderr,
         )
-        print_text_standup(commit_data)
+        if not _write_output(build_text_output(commit_data), args.output):
+            print_text_standup(commit_data)
         return 1
 
-    print_ai_standup(standup_text)
+    if not _write_output(standup_text.rstrip() + "\n", args.output):
+        print_ai_standup(standup_text)
     return 0
 
 

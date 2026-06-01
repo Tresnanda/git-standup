@@ -1,145 +1,207 @@
-# git-standup 🚀
+# git-standup
 
-**AI-powered weekly standup generator** — analyzes your git log and generates standup summaries with AI (or plain text).
+Generate standup-ready summaries from Git history.
 
-Works in any git repository. Supports OpenAI-compatible APIs.
+`git-standup` reads recent commits from the current repository, groups the work by author and date, and prints either a local text summary or an AI-generated narrative. It is designed for solo developers, maintainers, and small teams who want a fast way to turn commit history into a useful weekly update.
 
-## Features
+## Highlights
 
-- 📊 **Grouped output** — commits organized by author and date
-- 🤖 **AI summaries** — natural-language standup via LLM (OpenAI-compatible APIs)
-- 📝 **Text mode** — pretty terminal output without AI (`--no-ai`)
-- 🔍 **JSON export** — raw structured data for pipelines (`--json`)
-- 👤 **Filter by author** — `--author me` or any name
-- 📅 **Custom range** — `--days 1` for yesterday, `--days 14` for two weeks
-- 🔀 **Branch comparison** — `--base-branch main` to show just your branch changes
-- 🔌 **Any API** — OpenAI, Azure, Ollama, LocalAI, etc. via `--base-url`
+- Summarizes commits from the last N days.
+- Groups work by author and date.
+- Shows file-level change stats in local text mode.
+- Exports structured JSON for automation and reporting.
+- Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
+- Can run against another repository path with `--repo`.
+- Supports exact report windows with `--since` and `--until`.
+- Writes summaries directly to files with `--output`.
+- Supports AI summaries through OpenAI-compatible chat-completion APIs.
+- Works without AI by using `--no-ai`.
+- Can compare the current branch against a base branch.
 
 ## Installation
 
-```bash
-# From source
-cd git-standup
-pip install .
+Requires Python 3.10 or newer and Git.
 
-# Or with uv
-uv pip install .
+```bash
+pipx install .
 ```
 
-## Usage
-
-### Basic
+For local development:
 
 ```bash
-# Last 7 days, all contributors
-git-standup
-
-# Yesterday only
-git-standup --days 1
-
-# My commits only
-git-standup --author me
-
-# Filter by specific author
-git-standup --author "Jane Doe"
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-### Output modes
+## Quick Start
+
+Run from inside any Git repository:
 
 ```bash
-# AI-generated standup (requires API key)
-git-standup --api-key sk-...
-
-# Text summary without AI
 git-standup --no-ai
+```
 
-# Raw JSON
+Summarize the last day:
+
+```bash
+git-standup --days 1 --no-ai
+```
+
+Summarize only your commits:
+
+```bash
+git-standup --author me --no-ai
+```
+
+Export structured JSON:
+
+```bash
 git-standup --json
 ```
 
-### AI configuration
+Print Markdown:
 
 ```bash
-# Custom model
-git-standup --model gpt-4
+git-standup --markdown
+```
 
-# Custom API endpoint (e.g., Azure, Ollama, LocalAI)
-git-standup --base-url https://api.openai.com/v1
+Run from anywhere against another repository:
 
-# Or set environment variables
+```bash
+git-standup --repo ../api --no-ai
+```
+
+Generate an exact reporting window:
+
+```bash
+git-standup --since 2026-01-01 --until 2026-01-07 --markdown
+```
+
+Write output directly to a file:
+
+```bash
+git-standup --markdown --output standup.md
+```
+
+## AI Summaries
+
+By default, `git-standup` tries to generate a natural-language summary with an OpenAI-compatible API. Set an API key with either an environment variable or a CLI flag:
+
+```bash
 export OPENAI_API_KEY="sk-..."
-export OPENAI_BASE_URL="https://api.openai.com/v1"
 git-standup
 ```
 
-### Branch-specific
+Use a custom model:
 
 ```bash
-# Show commits in current branch not in main
-git-standup --base-branch main
+git-standup --model gpt-4o-mini
 ```
 
-## Examples
+Use an OpenAI-compatible endpoint such as Ollama, LocalAI, Azure OpenAI, or an internal gateway:
 
-### Text mode output
-
-```
-📋 Weekly Standup Summary
-
-👤 Alice
-──────────────────────────────────────────────────
-  📅 Mon Mar 10, 2026
-    [abc1234] Add user authentication middleware
-      ├ app/middleware/auth.py (+156/-12)
-      ├ tests/test_auth.py (+89/-0)
-      └ docs/auth.md (+45/-0)
-    [def5678] Fix rate limiting bug
-      ├ app/middleware/rate_limit.py (+12/-8)
-      └ tests/test_rate_limit.py (+34/-0)
+```bash
+git-standup \
+  --base-url http://localhost:11434/v1 \
+  --model llama3.1
 ```
 
-### AI mode output
+If AI generation fails, the command falls back to the local text summary and exits with a non-zero status so CI or scripts can detect the degraded path.
 
-```
-🤖 AI-Generated Standup
+## Common Workflows
 
-This week, Alice worked on adding user authentication middleware
-(+156 lines) with comprehensive test coverage. Bob refactored the
-database layer to improve query performance, resulting in ~40% faster
-reads. Carol fixed two critical bugs in the payment processing pipeline
-and added regression tests.
+### Weekly Personal Update
+
+```bash
+git-standup --author me --days 7
 ```
 
-### JSON output
+### Branch Review Summary
 
-```json
-{
-  "Alice": {
-    "2026-03-10": {
-      "commits": [
-        {
-          "hash": "abc1234...",
-          "subject": "Add user authentication middleware",
-          "files": [...]
-        }
-      ],
-      "stats": {
-        "total_commits": 1,
-        "total_insertions": 290,
-        "total_deletions": 12,
-        "total_files": 3
-      }
-    }
-  }
-}
+Show commits on the current branch that are not in `main`:
+
+```bash
+git-standup --base-branch main --no-ai
 ```
 
-## Requirements
+### Automation-Friendly JSON
 
-- Python 3.9+
-- git
-- Dependencies: `gitpython`, `rich`, `httpx` (installed automatically)
+```bash
+git-standup --days 14 --json --output standup.json
+```
+
+The JSON output is grouped as `author -> date -> commits/stats`, making it easy to feed into dashboards, release notes, or another summarization step.
+
+### Paste-Ready Markdown
+
+```bash
+git-standup --author me --days 7 --markdown --output standup.md
+```
+
+Markdown mode preserves the local, no-AI workflow while producing output that is easy to paste into issue comments, pull request updates, team notes, or status docs.
+
+## CLI Reference
+
+```text
+usage: git-standup [-h] [--days DAYS] [--repo REPO]
+                   [--since SINCE] [--until UNTIL] [--author AUTHOR]
+                   [--base-branch BASE_BRANCH] [--json] [--no-ai]
+                   [--markdown] [--output OUTPUT]
+                   [--api-key API_KEY] [--model MODEL]
+                   [--base-url BASE_URL] [--version]
+
+options:
+  --days DAYS          Number of days of Git history to include. Must be positive.
+  --repo PATH          Path to the Git repository to analyze.
+  --since DATE         Start date for the report window, in YYYY-MM-DD format.
+  --until DATE         End date for the report window, in YYYY-MM-DD format.
+  --author AUTHOR      Filter by author. Use "me" for the current Git user.
+  --base-branch NAME   Show commits in HEAD that are not in this base branch.
+  --json               Print structured JSON and skip AI generation.
+  --no-ai              Print a local Rich text summary and skip AI generation.
+  --markdown           Print Markdown and skip AI generation.
+  --output PATH        Write JSON, Markdown, text, or AI output to a file.
+  --api-key KEY        API key for AI summaries. Defaults to OPENAI_API_KEY.
+  --model NAME         Chat model name. Defaults to gpt-4o-mini.
+  --base-url URL       OpenAI-compatible API base URL.
+  --version            Print the installed version.
+```
+
+## Example Text Output
+
+```text
+Weekly Standup Summary
+
+Alice
+  Tue Mar 10, 2026
+    [abc123] Add authentication middleware
+      src/auth.py (+120 -8)
+      tests/test_auth.py (+48)
+
+Summary
+  Total Commits: 1
+  Total Files Changed: 2
+  Total Lines Added: 168
+  Total Lines Removed: 8
+```
+
+## Limitations
+
+- Commit quality affects summary quality. Squashed or vague commits produce less useful output.
+- Binary file changes are retained and counted with zero line changes because Git reports them without numeric stats.
+- AI summaries send commit metadata and file paths to the configured API provider.
+
+## Development
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest
+ruff check .
+```
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

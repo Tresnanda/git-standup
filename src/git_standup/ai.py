@@ -6,7 +6,6 @@ from typing import Any
 
 import httpx
 
-
 # Maximum characters for the prompt — conservative for small models
 _MAX_PROMPT_CHARS = 120_000
 
@@ -16,11 +15,15 @@ def _build_prompt(
     style: str = "standup",
 ) -> str:
     """Build a structured prompt from commit data."""
-    return f"""You are a helpful assistant that generates a concise weekly standup summary from git commit data.
+    return f"""You are a helpful assistant that generates a concise weekly
+standup summary from git commit data.
 
-Below is the structured commit data grouped by author, then by date. Each commit includes the hash, date, subject, body, and files changed with insertions/deletions.
+Below is structured commit data grouped by author, then by date. Each commit
+includes the hash, date, subject, body, and files changed with
+insertions/deletions.
 
-Generate a natural-language standup summary in a professional, friendly tone. Use bullet points or short paragraphs. Include:
+Generate a natural-language standup summary in a professional, friendly tone.
+Use bullet points or short paragraphs. Include:
 - What work was done (organized by author/project area)
 - Notable changes or feature work
 - Bug fixes or maintenance

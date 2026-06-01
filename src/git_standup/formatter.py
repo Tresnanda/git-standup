@@ -8,7 +8,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
-from rich.text import Text
 
 
 def build_json_output(
@@ -16,6 +15,106 @@ def build_json_output(
 ) -> str:
     """Serialize commit data to JSON."""
     return json.dumps(commit_data, indent=2, default=str)
+
+
+def build_markdown_output(
+    commit_data: dict[str, Any],
+) -> str:
+    """Build a paste-ready Markdown standup summary."""
+    lines = ["# Standup Summary", ""]
+
+    for author, days in commit_data.items():
+        lines.extend([f"## {author}", ""])
+        for date_key, day_data in days.items():
+            lines.extend([f"### {date_key}", ""])
+            for commit in day_data.get("commits", []):
+                hash_short = commit.get("hash", "")[:8]
+                subject = commit.get("subject", "")
+                lines.append(f"- `{hash_short}` {subject}")
+
+                files = commit.get("files", [])
+                if files:
+                    lines.append("  - Files:")
+                    for file_stat in files:
+                        path = file_stat.get("path", "")
+                        insertions = file_stat.get("insertions", 0)
+                        deletions = file_stat.get("deletions", 0)
+                        lines.append(f"    - `{path}` (+{insertions}/-{deletions})")
+
+            stats = day_data.get("stats", {})
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"_Stats: {stats.get('total_commits', 0)} commit(s), "
+                        f"{stats.get('total_files', 0)} file(s), "
+                        f"+{stats.get('total_insertions', 0)}/"
+                        f"-{stats.get('total_deletions', 0)} lines_"
+                    ),
+                    "",
+                ]
+            )
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_text_output(
+    commit_data: dict[str, Any],
+) -> str:
+    """Build a plain text standup summary suitable for files and terminals."""
+    lines = ["Weekly Standup Summary", ""]
+    total_commits = 0
+    total_insertions = 0
+    total_deletions = 0
+    all_files: set[str] = set()
+
+    for author, days in commit_data.items():
+        lines.extend([author, "-" * len(author)])
+        author_insertions = 0
+        author_deletions = 0
+        author_commits = 0
+
+        for date_key, day_data in days.items():
+            lines.append(f"  {date_key}")
+            for commit in day_data.get("commits", []):
+                author_commits += 1
+                hash_short = commit.get("hash", "")[:8]
+                subject = commit.get("subject", "")
+                lines.append(f"    [{hash_short}] {subject}")
+
+                for file_stat in commit.get("files", []):
+                    path = file_stat.get("path", "")
+                    insertions = file_stat.get("insertions", 0)
+                    deletions = file_stat.get("deletions", 0)
+                    all_files.add(path)
+                    author_insertions += insertions
+                    author_deletions += deletions
+                    lines.append(f"      - {path} (+{insertions}/-{deletions})")
+
+                body = commit.get("body", "")
+                if body and body.strip():
+                    lines.append(f"      {body.strip().splitlines()[0][:120]}")
+            lines.append("")
+
+        total_commits += author_commits
+        total_insertions += author_insertions
+        total_deletions += author_deletions
+        lines.append(
+            f"  Stats: {author_commits} commit(s), +{author_insertions}/-{author_deletions} lines"
+        )
+        lines.append("")
+
+    lines.extend(
+        [
+            "Summary",
+            "-------",
+            f"Total Commits: {total_commits}",
+            f"Total Files Changed: {len(all_files)}",
+            f"Total Lines Added: +{total_insertions}",
+            f"Total Lines Removed: -{total_deletions}",
+        ]
+    )
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def print_text_standup(
@@ -40,7 +139,7 @@ def print_text_standup(
 
     for author, days in commit_data.items():
         console.print(f"[bold yellow]👤 {author}[/bold yellow]")
-        console.print(f"[dim]─[/dim]" * 50)
+        console.print("[dim]─[/dim]" * 50)
 
         author_insertions = 0
         author_deletions = 0
