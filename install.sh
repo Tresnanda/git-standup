@@ -69,6 +69,27 @@ find_python() {
   return 1
 }
 
+data_home() {
+  echo "${XDG_DATA_HOME:-$HOME/.local/share}"
+}
+
+pipx_bin_dir() {
+  echo "${PIPX_BIN_DIR:-$HOME/.local/bin}"
+}
+
+bootstrap_pipx() {
+  venv_dir="$(data_home)/$APP_NAME/pipx-bootstrap"
+  log "pipx was not found; installing a private pipx helper..."
+  mkdir -p "$(dirname "$venv_dir")"
+  if ! "$PYTHON" -m venv "$venv_dir"; then
+    log "Error: could not create a Python virtual environment for pipx."
+    log "Install pipx manually, then rerun this installer."
+    exit 1
+  fi
+  "$venv_dir/bin/python" -m pip install --upgrade pip pipx
+  PIPX=("$venv_dir/bin/pipx")
+}
+
 shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
@@ -184,7 +205,7 @@ ensure_provider_key() {
   key_name="$(provider_env_key "$provider")"
   eval "key_value=\${$key_name:-}"
   [ -n "$key_value" ] && { log "[ok] $key_name already set"; return; }
-  has_tty || return
+  has_tty || return 0
   log ""
   log "$key_name was not found."
   log "1) Paste API key now"
@@ -224,7 +245,7 @@ default_ai_choice() {
 }
 
 setup_ai_defaults() {
-  has_tty || return
+  has_tty || return 0
   log ""
   log "Choose AI default:"
   log "1) Codex CLI - recommended if you use Codex"
@@ -265,9 +286,7 @@ elif "$PYTHON" -m pipx --version >/dev/null 2>&1; then
   PIPX=("$PYTHON" -m pipx)
   log "[ok] pipx found"
 elif ask_yes_no "Install pipx with this Python?" "y"; then
-  "$PYTHON" -m pip install --user pipx
-  "$PYTHON" -m pipx ensurepath >/dev/null 2>&1 || true
-  PIPX=("$PYTHON" -m pipx)
+  bootstrap_pipx
 else
   log "Install pipx and rerun this installer."
   exit 1
@@ -282,7 +301,7 @@ if command -v "$APP_NAME" >/dev/null 2>&1; then
   log "[ok] $APP_NAME installed"
 else
   log "[warn] $APP_NAME installed, but pipx bin dir may not be on PATH."
-  log "Run: python -m pipx ensurepath"
+  log "Run: export PATH=\"$(pipx_bin_dir):\$PATH\""
 fi
 
 offer_star_repo
