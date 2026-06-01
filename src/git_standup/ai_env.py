@@ -74,6 +74,7 @@ LOCAL_ENDPOINTS = (
 _HARNESS_DEFAULTS = {
     "ollama": ("http://localhost:11434/v1", "llama3.1"),
     "lms": ("http://localhost:1234/v1", "local-model"),
+    "codex": ("", ""),
 }
 
 

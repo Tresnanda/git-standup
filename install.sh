@@ -99,7 +99,19 @@ ask_text() {
 write_ai_defaults() {
   has_tty || return
   ask_yes_no "Save default AI provider/model for $APP_NAME?" "y" || return
-  provider="$(ask_text "Provider (openai/gemini/openrouter/groq/mistral/together/perplexity/xai)" "$(default_provider)")"
+  provider="$(ask_text "Provider or CLI (codex/openai/gemini/openrouter/groq/mistral/together/perplexity/xai)" "$(default_provider)")"
+  if [ "$provider" = "codex" ]; then
+    model="$(ask_text "Codex model (blank uses Codex default)" "")"
+    config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/$APP_NAME"
+    mkdir -p "$config_dir"
+    {
+      printf '# %s AI defaults. Store API keys in environment variables, not here.\n' "$APP_NAME"
+      printf 'harness = "codex"\n'
+      [ -n "$model" ] && printf 'model = "%s"\n' "$model"
+    } >"$config_dir/config.toml"
+    log "[ok] Saved AI defaults to $config_dir/config.toml"
+    return
+  fi
   base_url="$(ask_text "Base URL" "$(provider_base_url "$provider")")"
   model="$(ask_text "Model" "$(provider_model "$provider")")"
   config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/$APP_NAME"

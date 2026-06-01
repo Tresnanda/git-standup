@@ -11,7 +11,7 @@ from typing import Any
 from rich.prompt import Confirm, Prompt
 
 from git_standup import __version__
-from git_standup.ai import generate_standup
+from git_standup.ai import generate_standup, generate_standup_with_harness
 from git_standup.ai_env import PROVIDER_SPECS, detect_ai_environment, resolve_ai_connection
 from git_standup.config import AIConfig, config_path, load_config, reset_config, save_config
 from git_standup.formatter import (
@@ -191,9 +191,15 @@ def run_config_command(args: argparse.Namespace) -> int:
         return 0
 
     if action == "set-cli":
-        harness = args.harness or _choice("CLI harness", ["ollama", "lms"], "ollama")
-        default_model = "llama3.1" if harness == "ollama" else "local-model"
-        default_base_url = "http://localhost:11434/v1" if harness == "ollama" else "http://localhost:1234/v1"
+        harness = args.harness or _choice("CLI harness", ["codex", "ollama", "lms"], "codex")
+        default_model = ""
+        default_base_url = ""
+        if harness == "ollama":
+            default_model = "llama3.1"
+            default_base_url = "http://localhost:11434/v1"
+        elif harness == "lms":
+            default_model = "local-model"
+            default_base_url = "http://localhost:1234/v1"
         config = AIConfig(
             harness=harness,
             base_url=args.base_url or default_base_url,
@@ -350,7 +356,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--harness",
         type=str,
         default=None,
-        help="CLI harness name for config set-cli, such as ollama or lms",
+        help="CLI harness name for config set-cli, such as codex, ollama, or lms",
     )
     parser.add_argument(
         "--model",
@@ -466,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # AI mode
     try:
-        user_config = load_config()
+        user_config = load_config(config_path())
     except ValueError as exc:
         print(f"Error: invalid AI config: {exc}", file=sys.stderr)
         return 1
@@ -479,12 +485,19 @@ def main(argv: list[str] | None = None) -> int:
         provider_arg=args.provider,
     )
     try:
-        standup_text = generate_standup(
-            commit_data=commit_data,
-            api_key=connection.api_key,
-            model=connection.model,
-            base_url=connection.base_url,
-        )
+        if connection.provider == "codex":
+            standup_text = generate_standup_with_harness(
+                commit_data=commit_data,
+                harness=connection.provider,
+                model=connection.model,
+            )
+        else:
+            standup_text = generate_standup(
+                commit_data=commit_data,
+                api_key=connection.api_key,
+                model=connection.model,
+                base_url=connection.base_url,
+            )
     except RuntimeError as exc:
         # Fall back to text summary if AI fails
         print(

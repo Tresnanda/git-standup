@@ -2,6 +2,8 @@
 
 import json
 import os
+import subprocess
+import tempfile
 from typing import Any
 
 import httpx
@@ -112,3 +114,53 @@ def generate_standup(
 
     content = choices[0].get("message", {}).get("content", "")
     return content.strip()
+
+
+def generate_standup_with_harness(
+    commit_data: dict[str, Any],
+    harness: str,
+    model: str = "",
+) -> str:
+    """Generate a standup summary with a local AI CLI harness."""
+    if harness != "codex":
+        raise RuntimeError(f"Unsupported AI CLI harness: {harness}")
+
+    prompt = (
+        _build_prompt(commit_data)
+        + "\n\nReturn only the finished standup summary. Do not edit files or run commands."
+    )
+    command = [
+        "codex",
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--color",
+        "never",
+    ]
+    if model:
+        command.extend(["--model", model])
+
+    with tempfile.NamedTemporaryFile(suffix=".txt") as output_file:
+        command.extend(["--output-last-message", output_file.name, "-"])
+        try:
+            result = subprocess.run(
+                command,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=180,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("Codex CLI was not found on PATH.") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Codex CLI timed out while generating the standup.") from exc
+
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(f"Codex CLI failed: {detail}")
+
+        output = output_file.read().decode("utf-8").strip()
+        return output or result.stdout.strip()

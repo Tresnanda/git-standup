@@ -100,7 +100,23 @@ function Read-Defaulted($Prompt, $Default) {
 function Save-AIDefaults {
     if ($Yes) { return }
     if (-not (Confirm-Step "Save default AI provider/model for $AppName?" $true)) { return }
-    $provider = Read-Defaulted "Provider (openai/gemini/openrouter/groq/mistral/together/perplexity/xai)" (Get-DefaultProvider)
+    $provider = Read-Defaulted "Provider or CLI (codex/openai/gemini/openrouter/groq/mistral/together/perplexity/xai)" (Get-DefaultProvider)
+    if ($provider -eq "codex") {
+        $model = Read-Defaulted "Codex model (blank uses Codex default)" ""
+        $configDir = Join-Path $env:APPDATA $AppName
+        New-Item -ItemType Directory -Force -Path $configDir *> $null
+        $configPath = Join-Path $configDir "config.toml"
+        $lines = @(
+            "# $AppName AI defaults. Store API keys in environment variables, not here.",
+            "harness = `"codex`""
+        )
+        if (-not [string]::IsNullOrWhiteSpace($model)) {
+            $lines += "model = `"$model`""
+        }
+        $lines | Set-Content -Path $configPath -Encoding UTF8
+        Write-Host "[ok] Saved AI defaults to $configPath"
+        return
+    }
     $baseUrl = Read-Defaulted "Base URL" (Get-ProviderBaseUrl $provider)
     $model = Read-Defaulted "Model" (Get-ProviderModel $provider)
     $configDir = Join-Path $env:APPDATA $AppName

@@ -99,3 +99,17 @@ def test_resolve_ai_connection_prefers_cli_model_over_config() -> None:
     )
 
     assert connection.model == "manual-model"
+
+
+def test_resolve_ai_connection_supports_codex_harness_config() -> None:
+    connection = resolve_ai_connection(
+        api_key_arg=None,
+        base_url_arg=None,
+        model_arg=None,
+        env={},
+        config=AIConfig(harness="codex", model="gpt-5"),
+    )
+
+    assert connection.provider == "codex"
+    assert connection.base_url == ""
+    assert connection.model == "gpt-5"

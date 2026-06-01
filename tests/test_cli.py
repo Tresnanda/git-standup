@@ -212,6 +212,42 @@ def test_config_set_provider_saves_defaults(
     assert 'model = "openai/gpt-4o-mini"' in text
 
 
+def test_config_set_cli_accepts_codex(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(cli, "config_path", lambda: config_file)
+
+    assert cli.main(["config", "set-cli", "--harness", "codex", "--model", "gpt-5"]) == 0
+
+    text = config_file.read_text(encoding="utf-8")
+    assert 'harness = "codex"' in text
+    assert 'model = "gpt-5"' in text
+
+
+def test_ai_mode_uses_codex_harness_from_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('harness = "codex"\nmodel = "gpt-5"\n', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_generation(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "standup from codex"
+
+    monkeypatch.setattr(cli, "config_path", lambda: config_file)
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+    monkeypatch.setattr(cli, "generate_standup_with_harness", fake_generation)
+
+    assert cli.main([]) == 0
+
+    assert captured["harness"] == "codex"
+    assert captured["model"] == "gpt-5"
+
+
 def test_build_wizard_args_for_branch_markdown_report() -> None:
     args = cli.build_wizard_args(
         {

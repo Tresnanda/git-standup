@@ -159,6 +159,15 @@ Reset saved defaults:
 git-standup config reset
 ```
 
+Use the installed Codex CLI instead of an API key:
+
+```bash
+git-standup config set-cli --harness codex
+git-standup config set-cli --harness codex --model gpt-5
+```
+
+When Codex is selected, `git-standup` runs `codex exec` in read-only mode and uses your existing Codex login/config. No API key is required by `git-standup`.
+
 Use a custom model:
 
 ```bash
@@ -234,7 +243,8 @@ options:
   --output, --out PATH Write JSON, Markdown, text, or AI output to a file.
   --api-key KEY        API key for AI summaries. Defaults to OPENAI_API_KEY.
   --provider NAME      Provider override or config provider name.
-  --harness NAME       CLI harness for config set-cli, such as ollama or lms.
+  --harness NAME       CLI harness for config set-cli, such as codex, ollama,
+                       or lms.
   --model NAME         Chat model name. Defaults to gpt-4o-mini.
   --base-url URL       OpenAI-compatible API base URL.
   --version            Print the installed version.
