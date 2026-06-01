@@ -3,6 +3,7 @@ from git_standup.ai_env import (
     mask_secret,
     resolve_ai_connection,
 )
+from git_standup.config import AIConfig
 
 
 def test_mask_secret_keeps_values_private() -> None:
@@ -64,3 +65,37 @@ def test_resolve_ai_connection_supports_openrouter_and_gemini_keys() -> None:
     assert gemini.provider == "gemini"
     assert gemini.base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
     assert gemini.model == "gemini-3.5-flash"
+
+
+def test_resolve_ai_connection_uses_config_before_detected_environment() -> None:
+    connection = resolve_ai_connection(
+        api_key_arg=None,
+        base_url_arg=None,
+        model_arg=None,
+        env={"OPENAI_API_KEY": "sk-openai", "GEMINI_API_KEY": "sk-gemini"},
+        config=AIConfig(
+            provider="gemini",
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model="gemini-3.5-flash",
+        ),
+    )
+
+    assert connection.provider == "gemini"
+    assert connection.api_key == "sk-gemini"
+    assert connection.model == "gemini-3.5-flash"
+
+
+def test_resolve_ai_connection_prefers_cli_model_over_config() -> None:
+    connection = resolve_ai_connection(
+        api_key_arg=None,
+        base_url_arg=None,
+        model_arg="manual-model",
+        env={"OPENROUTER_API_KEY": "sk-openrouter"},
+        config=AIConfig(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            model="saved-model",
+        ),
+    )
+
+    assert connection.model == "manual-model"

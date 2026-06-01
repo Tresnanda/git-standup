@@ -40,7 +40,7 @@ For unattended installs, pass `--yes`:
 curl -fsSL https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.sh | bash -s -- --yes
 ```
 
-The installer uses `pipx`, checks Git, detects common AI API keys and local AI CLIs, skips Claude/Anthropic detection, then offers to launch `git-standup wizard`.
+The installer uses `pipx`, checks Git, detects common AI API keys and local AI CLIs, skips Claude/Anthropic detection, and can save your default provider/model before launching `git-standup wizard`. It never writes API keys to the config file.
 
 Manual install:
 
@@ -136,6 +136,29 @@ git-standup
 
 `git-standup` can also auto-detect OpenAI-compatible keys such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `PERPLEXITY_API_KEY`, and `XAI_API_KEY`. Claude/Anthropic keys are intentionally not detected or promoted by the installer.
 
+Save a default provider and model:
+
+```bash
+git-standup config
+git-standup config set-provider --provider gemini --model gemini-3.5-flash
+git-standup config show
+```
+
+Defaults live at `$XDG_CONFIG_HOME/git-standup/config.toml` or `~/.config/git-standup/config.toml` on macOS/Linux, and `%APPDATA%\git-standup\config.toml` on Windows. The file stores only `provider`, `base_url`, `model`, and optional `harness`; API keys stay in environment variables or `--api-key`.
+
+Resolution priority is:
+
+1. CLI flags such as `--api-key`, `--provider`, `--base-url`, and `--model`.
+2. Saved defaults from `git-standup config`.
+3. Detected environment variables.
+4. Built-in OpenAI-compatible defaults.
+
+Reset saved defaults:
+
+```bash
+git-standup config reset
+```
+
 Use a custom model:
 
 ```bash
@@ -191,12 +214,14 @@ usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
                    [--base-branch BASE_BRANCH] [--json] [--no-ai]
                    [--markdown] [--output OUTPUT]
-                   [--api-key API_KEY] [--model MODEL]
+                   [--api-key API_KEY] [--provider PROVIDER]
+                   [--harness HARNESS] [--model MODEL]
                    [--base-url BASE_URL] [--version] [--no-wizard]
-                   [preset|repo]
+                   [command|preset|repo ...]
 
 options:
-  preset|repo          Optional preset: wizard, me, week, branch; or a repository path.
+  command|preset|repo  Optional command or preset: wizard, config, me, week,
+                       branch; or a repository path.
   --days DAYS          Number of days of Git history to include. Must be positive.
   --repo PATH          Path to the Git repository to analyze.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.
@@ -208,6 +233,8 @@ options:
   --markdown           Print Markdown and skip AI generation.
   --output, --out PATH Write JSON, Markdown, text, or AI output to a file.
   --api-key KEY        API key for AI summaries. Defaults to OPENAI_API_KEY.
+  --provider NAME      Provider override or config provider name.
+  --harness NAME       CLI harness for config set-cli, such as ollama or lms.
   --model NAME         Chat model name. Defaults to gpt-4o-mini.
   --base-url URL       OpenAI-compatible API base URL.
   --version            Print the installed version.

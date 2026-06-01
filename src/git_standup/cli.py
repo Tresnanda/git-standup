@@ -12,7 +12,8 @@ from rich.prompt import Confirm, Prompt
 
 from git_standup import __version__
 from git_standup.ai import generate_standup
-from git_standup.ai_env import detect_ai_environment, resolve_ai_connection
+from git_standup.ai_env import PROVIDER_SPECS, detect_ai_environment, resolve_ai_connection
+from git_standup.config import AIConfig, config_path, load_config, reset_config, save_config
 from git_standup.formatter import (
     build_json_output,
     build_markdown_output,
@@ -133,6 +134,84 @@ def _format_command(args: list[str]) -> str:
     return "git-standup " + " ".join(shlex.quote(item) for item in args)
 
 
+def _provider_defaults(provider: str) -> tuple[str, str]:
+    for spec in PROVIDER_SPECS:
+        if spec.provider == provider:
+            return spec.base_url, spec.text_model
+    if provider == "custom":
+        return "https://api.openai.com/v1", "gpt-4o-mini"
+    raise ValueError(f"Unknown provider: {provider}")
+
+
+def _print_config(config: AIConfig, path: Path) -> None:
+    print(f"path: {path}")
+    for field in ("provider", "base_url", "model", "harness"):
+        value = getattr(config, field)
+        if value:
+            print(f"{field}: {value}")
+
+
+def run_config_command(args: argparse.Namespace) -> int:
+    """Show, reset, or update saved AI defaults."""
+    path = config_path()
+    action = args.config_action or "interactive"
+    if action == "show":
+        config = load_config(path)
+        if config is None:
+            print(f"No config found at {path}")
+        else:
+            _print_config(config, path)
+        return 0
+
+    if action == "reset":
+        if reset_config(path):
+            print(f"Removed config: {path}")
+        else:
+            print(f"No config found at {path}")
+        return 0
+
+    if action == "set-provider":
+        provider = args.provider
+        if not provider:
+            provider = _choice(
+                "Provider",
+                [spec.provider for spec in PROVIDER_SPECS] + ["custom"],
+                "openai",
+            )
+        default_base_url, default_model = _provider_defaults(provider)
+        if provider == "custom" and not args.base_url:
+            default_base_url = Prompt.ask("OpenAI-compatible base URL", default=default_base_url)
+        config = AIConfig(
+            provider=provider,
+            base_url=args.base_url or default_base_url,
+            model=args.model or default_model,
+        )
+        written = save_config(path, config)
+        print(f"Saved AI defaults to {written}")
+        return 0
+
+    if action == "set-cli":
+        harness = args.harness or _choice("CLI harness", ["ollama", "lms"], "ollama")
+        default_model = "llama3.1" if harness == "ollama" else "local-model"
+        default_base_url = "http://localhost:11434/v1" if harness == "ollama" else "http://localhost:1234/v1"
+        config = AIConfig(
+            harness=harness,
+            base_url=args.base_url or default_base_url,
+            model=args.model or default_model,
+        )
+        written = save_config(path, config)
+        print(f"Saved AI defaults to {written}")
+        return 0
+
+    if action == "interactive":
+        mode = _choice("Default type", ["provider", "cli"], "provider")
+        args.config_action = "set-cli" if mode == "cli" else "set-provider"
+        return run_config_command(args)
+
+    print(f"Unknown config action: {action}", file=sys.stderr)
+    return 2
+
+
 def run_wizard() -> int:
     """Interactive command builder for git-standup."""
     repo = Prompt.ask("Repository path", default=".")
@@ -172,6 +251,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "generate standup summaries.",
         epilog="Examples:\n"
         "  git-standup wizard              # Build the right command interactively\n"
+        "  git-standup config              # Choose saved AI defaults\n"
+        "  git-standup config show         # Show saved AI defaults\n"
         "  git-standup                     # Last 7 days, all contributors\n"
         "  git-standup me                  # My commits, no AI required\n"
         "  git-standup branch              # Current branch vs main, no AI required\n"
@@ -191,9 +272,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "target",
-        nargs="?",
-        help="Optional preset (wizard, me, week, branch) or repository path",
+        "tokens",
+        nargs="*",
+        help="Optional command, preset (wizard, config, me, week, branch), or repository path",
     )
     parser.add_argument(
         "--days",
@@ -260,6 +341,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="API key for the LLM provider (default: OPENAI_API_KEY env var)",
     )
     parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        help="Provider name for AI config or one-off AI resolution",
+    )
+    parser.add_argument(
+        "--harness",
+        type=str,
+        default=None,
+        help="CLI harness name for config set-cli, such as ollama or lms",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=None,
@@ -284,26 +377,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     args = parser.parse_args(argv)
     args.command = None
-    if args.target:
-        if args.target == "wizard":
+    tokens = list(args.tokens)
+    args.config_action = None
+    if tokens:
+        target = tokens.pop(0)
+        if target == "wizard":
             args.command = "wizard"
-        elif args.target == "me":
+            if tokens:
+                parser.error("wizard does not accept extra arguments")
+        elif target == "config":
+            args.command = "config"
+            args.config_action = tokens.pop(0) if tokens else "interactive"
+            if tokens:
+                parser.error("config accepts at most one action")
+        elif target == "me":
             args.author = "me"
             args.no_ai = True
-        elif args.target == "week":
+        elif target == "week":
             args.days = 7
             args.no_ai = True
-        elif args.target == "branch":
+        elif target == "branch":
             if args.base_branch is None:
                 args.base_branch = "main"
             args.no_ai = True
         else:
+            if tokens:
+                parser.error("expected at most one repository path")
             if args.repo is not None:
                 parser.error(
                     "provide a repository path either positionally or with --repo, not both"
                 )
-            args.repo = args.target
-    del args.target
+            args.repo = target
+    del args.tokens
     return args
 
 
@@ -319,6 +424,9 @@ def main(argv: list[str] | None = None) -> int:
         and sys.stdout.isatty()
     ):
         return run_wizard()
+
+    if args.command == "config":
+        return run_config_command(args)
 
     try:
         commits = get_commits(
@@ -357,11 +465,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # AI mode
+    try:
+        user_config = load_config()
+    except ValueError as exc:
+        print(f"Error: invalid AI config: {exc}", file=sys.stderr)
+        return 1
     connection = resolve_ai_connection(
         api_key_arg=args.api_key,
         base_url_arg=args.base_url,
         model_arg=args.model,
         env=os.environ,
+        config=user_config,
+        provider_arg=args.provider,
     )
     try:
         standup_text = generate_standup(

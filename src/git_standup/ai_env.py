@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from shutil import which as default_which
 from typing import Callable, Mapping
 
+from git_standup.config import AIConfig
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
@@ -69,6 +71,11 @@ LOCAL_ENDPOINTS = (
     "http://localhost:4000/v1",
 )
 
+_HARNESS_DEFAULTS = {
+    "ollama": ("http://localhost:11434/v1", "llama3.1"),
+    "lms": ("http://localhost:1234/v1", "local-model"),
+}
+
 
 def mask_secret(value: str) -> str:
     """Return a display-safe representation of a secret."""
@@ -123,13 +130,58 @@ def detect_ai_environment(
     }
 
 
+def _spec_for_provider(provider: str) -> ProviderSpec | None:
+    for spec in PROVIDER_SPECS:
+        if spec.provider == provider:
+            return spec
+    return None
+
+
+def _api_key_for_provider(provider: str, env: Mapping[str, str]) -> str:
+    spec = _spec_for_provider(provider)
+    if spec:
+        for key_name in spec.key_names:
+            if env.get(key_name):
+                return env[key_name]
+    return env.get("OPENAI_API_KEY", "")
+
+
 def resolve_ai_connection(
     api_key_arg: str | None,
     base_url_arg: str | None,
     model_arg: str | None,
     env: Mapping[str, str],
+    config: AIConfig | None = None,
+    provider_arg: str | None = None,
 ) -> AIConnection:
     """Resolve an OpenAI-compatible connection for text generation."""
+    if provider_arg or (config and (config.provider or config.harness)):
+        provider = provider_arg or (config.provider if config and config.provider else "")
+        harness = config.harness if config else ""
+        if harness and not provider:
+            base_url, default_model = _HARNESS_DEFAULTS.get(
+                harness,
+                ("https://api.openai.com/v1", "gpt-4o-mini"),
+            )
+            return AIConnection(
+                provider=harness,
+                api_key=api_key_arg or env.get("OPENAI_API_KEY", "") or harness,
+                base_url=base_url_arg or (config.base_url if config else "") or base_url,
+                model=model_arg or (config.model if config else "") or default_model,
+            )
+
+        spec = _spec_for_provider(provider)
+        default_base_url = spec.base_url if spec else "https://api.openai.com/v1"
+        default_model = spec.text_model if spec else "gpt-4o-mini"
+        if provider == "openai":
+            default_base_url = env.get("OPENAI_BASE_URL") or default_base_url
+        return AIConnection(
+            provider=provider or "custom",
+            api_key=api_key_arg or _api_key_for_provider(provider, env),
+            base_url=base_url_arg or (config.base_url if config else "") or default_base_url,
+            model=model_arg or (config.model if config else "") or default_model,
+        )
+
     if api_key_arg:
         return AIConnection(
             provider="custom" if base_url_arg else "openai",
@@ -153,11 +205,9 @@ def resolve_ai_connection(
                 return AIConnection(
                     provider=spec.provider,
                     api_key=value,
-                    base_url=(
-                        env.get("OPENAI_BASE_URL")
-                        if spec.provider == "openai"
-                        else spec.base_url
-                    ),
+                    base_url=env.get("OPENAI_BASE_URL") or spec.base_url
+                    if spec.provider == "openai"
+                    else spec.base_url,
                     model=model_arg or spec.text_model,
                 )
 
