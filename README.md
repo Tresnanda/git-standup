@@ -40,7 +40,7 @@ For unattended installs, pass `--yes`:
 curl -fsSL https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.sh | bash -s -- --yes
 ```
 
-The installer uses `pipx`, checks Git, detects common AI API keys and local AI CLIs, skips Claude/Anthropic detection, and can save your default provider/model before launching `git-standup wizard`. It never writes API keys to the config file.
+The installer uses `pipx`, checks Git, and offers a simple numbered AI setup. You can choose Codex CLI, OpenAI, Gemini, OpenRouter, or skip AI setup. If you paste an API key during install, it is saved to your user shell environment; the app config stores only provider/model defaults. The installer then offers to launch `git-standup wizard`.
 
 Manual install:
 
