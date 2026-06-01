@@ -2,6 +2,8 @@
 set -e
 
 APP_NAME="git-standup"
+REPO_SLUG="Tresnanda/git-standup"
+REPO_URL="https://github.com/$REPO_SLUG"
 REPO_SPEC="git+https://github.com/Tresnanda/git-standup.git"
 YES=0
 
@@ -78,6 +80,35 @@ save_secret_to_shell_profile() {
   export "$name=$value"
   log "[ok] Saved $name to $profile"
   log "Open a new terminal or run: source $profile"
+}
+
+offer_star_repo() {
+  if ! has_tty; then
+    log "Star it here: $REPO_URL"
+    return
+  fi
+  if ! ask_yes_no "If $APP_NAME helps you, star the GitHub repo now?" "y"; then
+    log "Star it here: $REPO_URL"
+    return
+  fi
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    if gh repo star "$REPO_SLUG" >/dev/null 2>&1; then
+      log "[ok] Starred $REPO_URL"
+      return
+    fi
+  fi
+  if [ -n "${GITHUB_TOKEN:-}" ] && command -v curl >/dev/null 2>&1; then
+    if curl -fsS -X PUT \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer $GITHUB_TOKEN" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "https://api.github.com/user/starred/$REPO_SLUG" >/dev/null 2>&1; then
+      log "[ok] Starred $REPO_URL"
+      return
+    fi
+  fi
+  log "Couldn't auto-star from this terminal."
+  log "Star it here: $REPO_URL"
 }
 
 config_dir() {
@@ -225,4 +256,5 @@ else
   log "Run: python -m pipx ensurepath"
 fi
 
+offer_star_repo
 log "Run git-standup in your terminal to start the guided report builder."
