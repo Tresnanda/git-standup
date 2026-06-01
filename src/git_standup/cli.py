@@ -1,6 +1,7 @@
 """CLI entry point for git-standup."""
 
 import argparse
+import os
 import re
 import shlex
 import sys
@@ -11,6 +12,7 @@ from rich.prompt import Confirm, Prompt
 
 from git_standup import __version__
 from git_standup.ai import generate_standup
+from git_standup.ai_env import detect_ai_environment, resolve_ai_connection
 from git_standup.formatter import (
     build_json_output,
     build_markdown_output,
@@ -135,11 +137,14 @@ def run_wizard() -> int:
     """Interactive command builder for git-standup."""
     repo = Prompt.ask("Repository path", default=".")
     preset = _choice("Report preset", ["me", "week", "branch", "custom"], "week")
+    ai_report = detect_ai_environment(os.environ)
     answers: dict[str, object] = {
         "repo": repo,
         "preset": preset,
         "format": _choice("Output format", ["text", "markdown", "json", "ai"], "text"),
     }
+    if ai_report["cli_harnesses"]:
+        print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))
     if preset == "branch":
         answers["base_branch"] = Prompt.ask("Base branch", default="main")
     elif preset == "custom":
@@ -257,7 +262,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="gpt-4o-mini",
+        default=None,
         help="Model name to use (default: gpt-4o-mini)",
     )
     parser.add_argument(
@@ -352,12 +357,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # AI mode
+    connection = resolve_ai_connection(
+        api_key_arg=args.api_key,
+        base_url_arg=args.base_url,
+        model_arg=args.model,
+        env=os.environ,
+    )
     try:
         standup_text = generate_standup(
             commit_data=commit_data,
-            api_key=args.api_key,
-            model=args.model,
-            base_url=args.base_url,
+            api_key=connection.api_key,
+            model=connection.model,
+            base_url=connection.base_url,
         )
     except RuntimeError as exc:
         # Fall back to text summary if AI fails

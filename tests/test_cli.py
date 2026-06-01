@@ -131,6 +131,27 @@ def test_ai_failure_falls_back_to_text_summary(
     assert "Weekly Standup Summary" in captured.out
 
 
+def test_ai_mode_uses_detected_openrouter_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+
+    def fake_generation(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "standup"
+
+    monkeypatch.setattr(cli, "generate_standup", fake_generation)
+
+    exit_code = cli.main([])
+
+    assert exit_code == 0
+    assert captured["api_key"] == "sk-openrouter"
+    assert captured["base_url"] == "https://openrouter.ai/api/v1"
+    assert captured["model"] == "openai/gpt-4o-mini"
+
+
 def test_days_must_be_positive() -> None:
     with pytest.raises(SystemExit):
         cli.parse_args(["--days", "0"])

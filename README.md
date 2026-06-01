@@ -22,6 +22,28 @@ Generate standup-ready summaries from Git history.
 
 Requires Python 3.10 or newer and Git.
 
+macOS/Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.ps1 | iex
+```
+
+For unattended installs, pass `--yes`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.sh | bash -s -- --yes
+```
+
+The installer uses `pipx`, checks Git, detects common AI API keys and local AI CLIs, skips Claude/Anthropic detection, then offers to launch `git-standup wizard`.
+
+Manual install:
+
 ```bash
 pipx install .
 ```
@@ -111,6 +133,8 @@ By default, `git-standup` tries to generate a natural-language summary with an O
 export OPENAI_API_KEY="sk-..."
 git-standup
 ```
+
+`git-standup` can also auto-detect OpenAI-compatible keys such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `PERPLEXITY_API_KEY`, and `XAI_API_KEY`. Claude/Anthropic keys are intentionally not detected or promoted by the installer.
 
 Use a custom model:
 
