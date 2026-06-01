@@ -42,6 +42,19 @@ Run from inside any Git repository:
 git-standup week
 ```
 
+On an interactive terminal, the bare command opens a guided command builder that asks for the repository, report preset, output format, and optional output file, then shows the generated command before running it:
+
+```bash
+git-standup
+git-standup wizard
+```
+
+To force the previous immediate default report from an interactive shell, use:
+
+```bash
+git-standup --no-wizard
+```
+
 Summarize the last day:
 
 ```bash
@@ -155,11 +168,11 @@ usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--base-branch BASE_BRANCH] [--json] [--no-ai]
                    [--markdown] [--output OUTPUT]
                    [--api-key API_KEY] [--model MODEL]
-                   [--base-url BASE_URL] [--version]
+                   [--base-url BASE_URL] [--version] [--no-wizard]
                    [preset|repo]
 
 options:
-  preset|repo          Optional preset: me, week, branch; or a repository path.
+  preset|repo          Optional preset: wizard, me, week, branch; or a repository path.
   --days DAYS          Number of days of Git history to include. Must be positive.
   --repo PATH          Path to the Git repository to analyze.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.
@@ -174,6 +187,7 @@ options:
   --model NAME         Chat model name. Defaults to gpt-4o-mini.
   --base-url URL       OpenAI-compatible API base URL.
   --version            Print the installed version.
+  --no-wizard          Run the default report instead of the interactive guide.
 ```
 
 ## Example Text Output

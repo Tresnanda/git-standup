@@ -134,3 +134,45 @@ def test_ai_failure_falls_back_to_text_summary(
 def test_days_must_be_positive() -> None:
     with pytest.raises(SystemExit):
         cli.parse_args(["--days", "0"])
+
+
+def test_parse_args_accepts_wizard_command() -> None:
+    args = cli.parse_args(["wizard"])
+
+    assert args.command == "wizard"
+
+
+def test_build_wizard_args_for_branch_markdown_report() -> None:
+    args = cli.build_wizard_args(
+        {
+            "repo": "../api",
+            "preset": "branch",
+            "base_branch": "develop",
+            "format": "markdown",
+            "output": "standup.md",
+        }
+    )
+
+    assert args == [
+        "--repo",
+        "../api",
+        "--base-branch",
+        "develop",
+        "--markdown",
+        "--output",
+        "standup.md",
+    ]
+
+
+def test_main_opens_wizard_for_bare_interactive_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Tty:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr(cli.sys, "stdin", Tty())
+    monkeypatch.setattr(cli.sys, "stdout", Tty())
+    monkeypatch.setattr(cli, "run_wizard", lambda: 0)
+
+    assert cli.main([]) == 0

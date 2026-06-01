@@ -2,9 +2,12 @@
 
 import argparse
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
+
+from rich.prompt import Confirm, Prompt
 
 from git_standup import __version__
 from git_standup.ai import generate_standup
@@ -78,6 +81,84 @@ def _write_output(text: str, output_path: str | None) -> bool:
     return True
 
 
+def build_wizard_args(answers: dict[str, object]) -> list[str]:
+    """Build deterministic git-standup arguments from wizard answers."""
+    args: list[str] = []
+    repo = str(answers.get("repo") or ".")
+    if repo != ".":
+        args.extend(["--repo", repo])
+
+    preset = str(answers.get("preset") or "week")
+    if preset == "me":
+        args.extend(["--author", "me"])
+    elif preset == "branch":
+        args.extend(["--base-branch", str(answers.get("base_branch") or "main")])
+    elif preset == "custom":
+        days = answers.get("days")
+        since = answers.get("since")
+        until = answers.get("until")
+        author = answers.get("author")
+        if since:
+            args.extend(["--since", str(since)])
+        elif days:
+            args.extend(["--days", str(days)])
+        if until:
+            args.extend(["--until", str(until)])
+        if author:
+            args.extend(["--author", str(author)])
+    else:
+        args.extend(["--days", "7"])
+
+    output_format = str(answers.get("format") or "text")
+    if output_format == "markdown":
+        args.append("--markdown")
+    elif output_format == "json":
+        args.append("--json")
+    elif output_format == "text":
+        args.append("--no-ai")
+
+    output = answers.get("output")
+    if output:
+        args.extend(["--output", str(output)])
+    return args
+
+
+def _choice(message: str, choices: list[str], default: str) -> str:
+    return Prompt.ask(message, choices=choices, default=default)
+
+
+def _format_command(args: list[str]) -> str:
+    return "git-standup " + " ".join(shlex.quote(item) for item in args)
+
+
+def run_wizard() -> int:
+    """Interactive command builder for git-standup."""
+    repo = Prompt.ask("Repository path", default=".")
+    preset = _choice("Report preset", ["me", "week", "branch", "custom"], "week")
+    answers: dict[str, object] = {
+        "repo": repo,
+        "preset": preset,
+        "format": _choice("Output format", ["text", "markdown", "json", "ai"], "text"),
+    }
+    if preset == "branch":
+        answers["base_branch"] = Prompt.ask("Base branch", default="main")
+    elif preset == "custom":
+        answers["days"] = Prompt.ask("Days of history", default="7")
+        author = Prompt.ask("Author filter (blank for all, 'me' for you)", default="")
+        if author:
+            answers["author"] = author
+
+    output = Prompt.ask("Output file (blank for stdout)", default="")
+    if output:
+        answers["output"] = output
+
+    args = build_wizard_args(answers)
+    print(f"\nGenerated command:\n  {_format_command(args)}\n")
+    if Confirm.ask("Run it now", default=True):
+        return main(args)
+    return 0
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -85,6 +166,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="AI-powered weekly standup generator. Analyze git history and "
         "generate standup summaries.",
         epilog="Examples:\n"
+        "  git-standup wizard              # Build the right command interactively\n"
         "  git-standup                     # Last 7 days, all contributors\n"
         "  git-standup me                  # My commits, no AI required\n"
         "  git-standup branch              # Current branch vs main, no AI required\n"
@@ -106,7 +188,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "target",
         nargs="?",
-        help="Optional preset (me, week, branch) or repository path",
+        help="Optional preset (wizard, me, week, branch) or repository path",
     )
     parser.add_argument(
         "--days",
@@ -189,10 +271,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="version",
         version=f"git-standup {__version__}",
     )
+    parser.add_argument(
+        "--no-wizard",
+        action="store_true",
+        help="Run the default report instead of the interactive guide",
+    )
 
     args = parser.parse_args(argv)
+    args.command = None
     if args.target:
-        if args.target == "me":
+        if args.target == "wizard":
+            args.command = "wizard"
+        elif args.target == "me":
             args.author = "me"
             args.no_ai = True
         elif args.target == "week":
@@ -214,7 +304,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     """Main entry point."""
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(argv)
+
+    if args.command == "wizard" or (
+        not raw_argv
+        and not args.no_wizard
+        and sys.stdin.isatty()
+        and sys.stdout.isatty()
+    ):
+        return run_wizard()
 
     try:
         commits = get_commits(
