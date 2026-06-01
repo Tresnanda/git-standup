@@ -191,6 +191,44 @@ def test_update_command_runs_pipx_install(monkeypatch: pytest.MonkeyPatch) -> No
     ]
 
 
+def test_update_command_bootstraps_pipx_with_host_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    install_cmd = [
+        "/usr/bin/python3",
+        "-m",
+        "pipx",
+        "install",
+        "--force",
+        "git+https://github.com/Tresnanda/git-standup.git",
+    ]
+
+    def fake_which(name: str) -> str | None:
+        return "/usr/bin/python3" if name == "python3" else None
+
+    def fake_exists(self) -> bool:
+        return False
+
+    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        if cmd == install_cmd and calls.count(cmd) == 1:
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli.shutil, "which", fake_which)
+    monkeypatch.setattr(cli.Path, "exists", fake_exists)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.main(["update"]) == 0
+    assert calls == [
+        install_cmd,
+        ["/usr/bin/python3", "-m", "pip", "install", "--user", "pipx"],
+        ["/usr/bin/python3", "-m", "pipx", "ensurepath"],
+        install_cmd,
+    ]
+
+
 def test_parse_args_accepts_config_subcommands() -> None:
     show = cli.parse_args(["config", "show"])
     assert show.command == "config"
