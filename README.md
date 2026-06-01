@@ -39,7 +39,7 @@ pip install -e ".[dev]"
 Run from inside any Git repository:
 
 ```bash
-git-standup --no-ai
+git-standup week
 ```
 
 Summarize the last day:
@@ -51,7 +51,7 @@ git-standup --days 1 --no-ai
 Summarize only your commits:
 
 ```bash
-git-standup --author me --no-ai
+git-standup me
 ```
 
 Export structured JSON:
@@ -69,7 +69,7 @@ git-standup --markdown
 Run from anywhere against another repository:
 
 ```bash
-git-standup --repo ../api --no-ai
+git-standup ../api --markdown
 ```
 
 Generate an exact reporting window:
@@ -82,6 +82,12 @@ Write output directly to a file:
 
 ```bash
 git-standup --markdown --output standup.md
+```
+
+Use the shorter output alias:
+
+```bash
+git-standup me --out standup.txt
 ```
 
 ## AI Summaries
@@ -122,7 +128,7 @@ git-standup --author me --days 7
 Show commits on the current branch that are not in `main`:
 
 ```bash
-git-standup --base-branch main --no-ai
+git-standup branch
 ```
 
 ### Automation-Friendly JSON
@@ -150,8 +156,10 @@ usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--markdown] [--output OUTPUT]
                    [--api-key API_KEY] [--model MODEL]
                    [--base-url BASE_URL] [--version]
+                   [preset|repo]
 
 options:
+  preset|repo          Optional preset: me, week, branch; or a repository path.
   --days DAYS          Number of days of Git history to include. Must be positive.
   --repo PATH          Path to the Git repository to analyze.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.
@@ -161,7 +169,7 @@ options:
   --json               Print structured JSON and skip AI generation.
   --no-ai              Print a local Rich text summary and skip AI generation.
   --markdown           Print Markdown and skip AI generation.
-  --output PATH        Write JSON, Markdown, text, or AI output to a file.
+  --output, --out PATH Write JSON, Markdown, text, or AI output to a file.
   --api-key KEY        API key for AI summaries. Defaults to OPENAI_API_KEY.
   --model NAME         Chat model name. Defaults to gpt-4o-mini.
   --base-url URL       OpenAI-compatible API base URL.

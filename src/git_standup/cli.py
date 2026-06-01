@@ -86,6 +86,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "generate standup summaries.",
         epilog="Examples:\n"
         "  git-standup                     # Last 7 days, all contributors\n"
+        "  git-standup me                  # My commits, no AI required\n"
+        "  git-standup branch              # Current branch vs main, no AI required\n"
+        "  git-standup ../api --markdown   # Run against another repository\n"
         "  git-standup --days 1            # Yesterday only\n"
         "  git-standup --repo ../api       # Run against another repository\n"
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
@@ -100,6 +103,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    parser.add_argument(
+        "target",
+        nargs="?",
+        help="Optional preset (me, week, branch) or repository path",
+    )
     parser.add_argument(
         "--days",
         type=_positive_int,
@@ -153,7 +161,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Output a paste-ready Markdown summary without AI",
     )
     parser.add_argument(
-        "--output",
+        "--output", "--out",
         type=str,
         default=None,
         help="Write the generated JSON, Markdown, text, or AI summary to a file",
@@ -182,7 +190,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         version=f"git-standup {__version__}",
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.target:
+        if args.target == "me":
+            args.author = "me"
+            args.no_ai = True
+        elif args.target == "week":
+            args.days = 7
+            args.no_ai = True
+        elif args.target == "branch":
+            if args.base_branch is None:
+                args.base_branch = "main"
+            args.no_ai = True
+        else:
+            if args.repo is not None:
+                parser.error(
+                    "provide a repository path either positionally or with --repo, not both"
+                )
+            args.repo = args.target
+    del args.target
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

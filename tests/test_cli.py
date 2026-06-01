@@ -72,6 +72,21 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
     assert captured["until"] == "2026-01-07"
 
 
+def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
+    me = cli.parse_args(["me"])
+    assert me.author == "me"
+    assert me.no_ai is True
+
+    branch = cli.parse_args(["branch"])
+    assert branch.base_branch == "main"
+    assert branch.no_ai is True
+
+    repo = cli.parse_args(["../api", "--markdown", "--out", "standup.md"])
+    assert repo.repo == "../api"
+    assert repo.markdown is True
+    assert repo.output == "standup.md"
+
+
 def test_markdown_mode_writes_to_output_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
