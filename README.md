@@ -40,7 +40,7 @@ For unattended installs, pass `--yes`:
 curl -fsSL https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.sh | bash -s -- --yes
 ```
 
-The installer uses `pipx`, checks Git, and offers a simple numbered AI setup. You can choose Codex CLI, OpenAI, Gemini, OpenRouter, or skip AI setup. If you paste an API key during install, it is saved to your user shell environment; the app config stores only provider/model defaults. The installer then offers to launch `git-standup wizard`. The wizard checks for a newer GitHub version and asks before updating.
+The installer uses `pipx`, checks Git, and offers a simple numbered AI setup. You can choose Codex CLI, OpenAI, Gemini, OpenRouter, or skip AI setup. If you paste an API key during install, it is saved to your user shell environment; the app config stores only provider/model defaults. After install, run `git-standup` in your terminal to start the guided report builder. The wizard checks for a newer GitHub version and asks before updating.
 
 Manual install:
 

@@ -193,6 +193,4 @@ if (Get-Command $AppName -ErrorAction SilentlyContinue) {
     Write-Host "Run: python -m pipx ensurepath"
 }
 
-if (-not $Yes -and (Confirm-Step "Run $AppName wizard now?" $true)) {
-    & $AppName wizard
-}
+Write-Host "Run git-standup in your terminal to start the guided report builder."

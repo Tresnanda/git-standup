@@ -19,6 +19,9 @@ def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert "Paste API key now" in text
     assert "save_secret_to_shell_profile" in text
     assert 'harness = "codex"' in text
+    assert "Run $APP_NAME wizard now?" not in text
+    assert '"$APP_NAME" wizard' not in text
+    assert "Run git-standup in your terminal to start the guided report builder." in text
 
 
 def test_windows_installer_uses_numbered_ai_setup_and_key_entry() -> None:
@@ -33,3 +36,6 @@ def test_windows_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert "Paste API key now" in text
     assert "Save-UserSecret" in text
     assert "harness = `\"codex`\"" in text
+    assert "Run $AppName wizard now?" not in text
+    assert "& $AppName wizard" not in text
+    assert "Run git-standup in your terminal to start the guided report builder." in text
