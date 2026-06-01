@@ -1,0 +1,2 @@
+[console_scripts]
+git-standup = git_standup.cli:main
