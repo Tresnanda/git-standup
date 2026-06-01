@@ -63,4 +63,4 @@ def test_resolve_ai_connection_supports_openrouter_and_gemini_keys() -> None:
     assert openrouter.model == "openai/gpt-4o-mini"
     assert gemini.provider == "gemini"
     assert gemini.base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
-    assert gemini.model == "gemini-2.5-flash"
+    assert gemini.model == "gemini-3.5-flash"

@@ -30,7 +30,7 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
         "gemini",
         ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "gemini-2.5-flash",
+        "gemini-3.5-flash",
         True,
     ),
     ProviderSpec(
