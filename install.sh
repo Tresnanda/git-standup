@@ -5,6 +5,8 @@ APP_NAME="git-standup"
 REPO_SLUG="Tresnanda/git-standup"
 REPO_URL="https://github.com/$REPO_SLUG"
 REPO_SPEC="git+https://github.com/Tresnanda/git-standup.git"
+MIN_PYTHON_MAJOR=3
+MIN_PYTHON_MINOR=10
 YES=0
 
 for arg in "$@"; do
@@ -47,11 +49,24 @@ ask_choice() {
   if [ -n "$answer" ]; then echo "$answer"; else echo "$default"; fi
 }
 
+python_version_ok() {
+  "$1" - <<PY
+import sys
+raise SystemExit(0 if sys.version_info >= ($MIN_PYTHON_MAJOR, $MIN_PYTHON_MINOR) else 1)
+PY
+}
+
 find_python() {
-  if command -v python3 >/dev/null 2>&1; then command -v python3
-  elif command -v python >/dev/null 2>&1; then command -v python
-  else return 1
-  fi
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3 python; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      path="$(command -v "$candidate")"
+      if python_version_ok "$path"; then
+        echo "$path"
+        return 0
+      fi
+    fi
+  done
+  return 1
 }
 
 shell_quote() {
@@ -229,16 +244,30 @@ setup_ai_defaults() {
 
 log "Install git-standup"
 log "This checks Python/Git, installs with pipx, and can set an AI default."
-PYTHON="$(find_python)" || { log "Error: Python 3.10+ is required."; exit 1; }
+PYTHON="$(find_python)" || {
+  log "Error: Python 3.10+ is required."
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+    log "Install it with: brew install python"
+  else
+    log "Install Python 3.10 or newer, then rerun this installer."
+  fi
+  exit 1
+}
 log "[ok] Python: $("$PYTHON" --version 2>&1)"
 command -v git >/dev/null 2>&1 && log "[ok] git found" || log "[warn] git not found"
 command -v codex >/dev/null 2>&1 && log "[ok] Codex CLI found" || true
 
-if "$PYTHON" -m pipx --version >/dev/null 2>&1; then
+PIPX=()
+if command -v pipx >/dev/null 2>&1; then
+  PIPX=("$(command -v pipx)")
+  log "[ok] pipx found"
+elif "$PYTHON" -m pipx --version >/dev/null 2>&1; then
+  PIPX=("$PYTHON" -m pipx)
   log "[ok] pipx found"
 elif ask_yes_no "Install pipx with this Python?" "y"; then
   "$PYTHON" -m pip install --user pipx
   "$PYTHON" -m pipx ensurepath >/dev/null 2>&1 || true
+  PIPX=("$PYTHON" -m pipx)
 else
   log "Install pipx and rerun this installer."
   exit 1
@@ -247,7 +276,7 @@ fi
 setup_ai_defaults
 
 log "Installing $APP_NAME from GitHub..."
-"$PYTHON" -m pipx install --force "$REPO_SPEC"
+"${PIPX[@]}" install --python "$PYTHON" --force "$REPO_SPEC"
 if command -v "$APP_NAME" >/dev/null 2>&1; then
   "$APP_NAME" --help >/dev/null
   log "[ok] $APP_NAME installed"

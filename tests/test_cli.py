@@ -6,6 +6,26 @@ import pytest
 from git_standup import cli
 
 
+@pytest.fixture(autouse=True)
+def isolated_user_ai_settings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(cli, "config_path", lambda: tmp_path / "config.toml")
+    for key in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "MISTRAL_API_KEY",
+        "OPENROUTER_API_KEY",
+        "TOGETHER_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "XAI_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 def _sample_commits() -> list[dict[str, object]]:
     return [
         {

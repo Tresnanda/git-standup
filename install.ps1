@@ -7,6 +7,8 @@ $AppName = "git-standup"
 $RepoSlug = "Tresnanda/git-standup"
 $RepoUrl = "https://github.com/$RepoSlug"
 $RepoSpec = "git+https://github.com/Tresnanda/git-standup.git"
+$MinimumPythonMajor = 3
+$MinimumPythonMinor = 10
 
 function Confirm-Step($Prompt, $DefaultYes = $true) {
     if ($Yes) { return $true }
@@ -62,12 +64,59 @@ function Read-Choice($Prompt, $Default) {
     return $answer
 }
 
-function Find-Python {
-    foreach ($candidate in @("py", "python3", "python")) {
-        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
-        if ($cmd) { return $candidate }
+function Invoke-PythonCandidate($Candidate, [string[]]$Arguments) {
+    $exe = $Candidate[0]
+    $allArgs = @()
+    if ($Candidate.Count -gt 1) {
+        $allArgs += $Candidate[1..($Candidate.Count - 1)]
     }
-    throw "Python 3 is required."
+    $allArgs += $Arguments
+    & $exe @allArgs
+}
+
+function Test-PythonVersion($Candidate) {
+    try {
+        Invoke-PythonCandidate $Candidate @("-c", "import sys; raise SystemExit(0 if sys.version_info >= ($MinimumPythonMajor, $MinimumPythonMinor) else 1)") *> $null
+        return $LASTEXITCODE -eq 0
+    } catch {
+        return $false
+    }
+}
+
+function Resolve-PythonExecutable($Candidate) {
+    $output = Invoke-PythonCandidate $Candidate @("-c", "import sys; print(sys.executable)")
+    return ($output | Select-Object -First 1).Trim()
+}
+
+function Invoke-Pipx([string[]]$Arguments) {
+    $exe = $script:PipxCommand[0]
+    $allArgs = @()
+    if ($script:PipxCommand.Count -gt 1) {
+        $allArgs += $script:PipxCommand[1..($script:PipxCommand.Count - 1)]
+    }
+    $allArgs += $Arguments
+    & $exe @allArgs
+}
+
+function Find-Python {
+    $candidates = @(
+        @("py", "-3.13"),
+        @("py", "-3.12"),
+        @("py", "-3.11"),
+        @("py", "-3.10"),
+        @("python3.13"),
+        @("python3.12"),
+        @("python3.11"),
+        @("python3.10"),
+        @("python3"),
+        @("python")
+    )
+    foreach ($candidate in $candidates) {
+        if ((Get-Command $candidate[0] -ErrorAction SilentlyContinue) -and (Test-PythonVersion $candidate)) {
+            return Resolve-PythonExecutable $candidate
+        }
+    }
+    throw "Python 3.10 or newer is required. Install it from https://www.python.org/downloads/ and rerun this installer."
 }
 
 function Read-SecretText($Prompt) {
@@ -210,22 +259,29 @@ if (Get-Command codex -ErrorAction SilentlyContinue) {
     Write-Host "[ok] Codex CLI found"
 }
 
-try {
-    & $Python -m pipx --version *> $null
+$script:PipxCommand = @()
+if (Get-Command pipx -ErrorAction SilentlyContinue) {
+    $script:PipxCommand = @("pipx")
     Write-Host "[ok] pipx found"
-} catch {
-    if (Confirm-Step "Install pipx with this Python?" $true) {
-        & $Python -m pip install --user pipx
-        & $Python -m pipx ensurepath *> $null
-    } else {
-        throw "Install pipx and rerun this installer."
+} else {
+    $script:PipxCommand = @($Python, "-m", "pipx")
+    try {
+        Invoke-Pipx @("--version") *> $null
+        Write-Host "[ok] pipx found"
+    } catch {
+        if (Confirm-Step "Install pipx with this Python?" $true) {
+            & $Python -m pip install --user pipx
+            & $Python -m pipx ensurepath *> $null
+        } else {
+            throw "Install pipx and rerun this installer."
+        }
     }
 }
 
 Setup-AIDefaults
 
 Write-Host "Installing $AppName from GitHub..."
-& $Python -m pipx install --force $RepoSpec
+Invoke-Pipx @("install", "--python", $Python, "--force", $RepoSpec)
 if (Get-Command $AppName -ErrorAction SilentlyContinue) {
     & $AppName --help *> $null
     Write-Host "[ok] $AppName installed"

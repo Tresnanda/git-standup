@@ -10,6 +10,10 @@ def _read(name: str) -> str:
 def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     text = _read("install.sh")
 
+    assert "python_version_ok()" in text
+    assert "python3.13 python3.12 python3.11 python3.10 python3 python" in text
+    assert "Python 3.10+ is required." in text
+    assert 'install --python "$PYTHON" --force "$REPO_SPEC"' in text
     assert "Choose AI default:" in text
     assert "1) Codex CLI" in text
     assert "2) OpenAI API" in text
@@ -31,6 +35,11 @@ def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
 def test_windows_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     text = _read("install.ps1")
 
+    assert "$MinimumPythonMajor = 3" in text
+    assert "$MinimumPythonMinor = 10" in text
+    assert "Test-PythonVersion" in text
+    assert "Resolve-PythonExecutable" in text
+    assert '"--python", $Python, "--force", $RepoSpec' in text
     assert "Choose AI default:" in text
     assert "1) Codex CLI" in text
     assert "2) OpenAI API" in text
