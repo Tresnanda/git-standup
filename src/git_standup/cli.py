@@ -408,6 +408,9 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     else:
         args.extend(["--days", "7"])
 
+    authors = answers.get("authors")
+    if isinstance(authors, list) and authors and preset not in {"me", "me_week"}:
+        args.extend(["--author", "|".join(str(author) for author in authors)])
     author = answers.get("author")
     if author and preset not in {"me", "me_week"}:
         args.extend(["--author", str(author)])
@@ -459,6 +462,62 @@ def _numbered_choice(
 
     choice = Prompt.ask(f"{message} choice", choices=allowed, default=default_index)
     return options[int(choice) - 1][0]
+
+
+def _recent_authors(repo: str) -> list[str]:
+    cmd = ["git"]
+    if repo != ".":
+        cmd.extend(["-C", repo])
+    cmd.extend(["log", "--format=%an", "-n", "100"])
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return []
+
+    authors: list[str] = []
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        author = line.strip()
+        if author and author not in seen:
+            authors.append(author)
+            seen.add(author)
+    return authors[:12]
+
+
+def _parse_author_selection(raw: str, authors: list[str]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for token in (item.strip() for item in raw.split(",")):
+        if not token:
+            continue
+        author = token
+        if token.isdigit():
+            index = int(token) - 1
+            if 0 <= index < len(authors):
+                author = authors[index]
+        if author not in seen:
+            selected.append(author)
+            seen.add(author)
+    return selected
+
+
+def _choose_authors(repo: str) -> list[str]:
+    authors = _recent_authors(repo)
+    if authors:
+        print("\nChoose authors:")
+        for index, author in enumerate(authors, start=1):
+            print(f"  {index}) {author}")
+        raw = Prompt.ask("Author choices (comma-separated numbers or names/emails)", default="")
+        return _parse_author_selection(raw, authors)
+
+    raw = Prompt.ask("Author names or emails (comma-separated)", default="")
+    return _parse_author_selection(raw, [])
 
 
 def _format_command(args: list[str]) -> str:
@@ -567,7 +626,7 @@ def run_wizard() -> int:
         [
             ("all", "Everyone", "All contributors."),
             ("me", "Me", "Only commits authored by me."),
-            ("custom", "Someone else", "Type an author name or email."),
+            ("custom", "Someone else", "Pick one or more authors."),
         ],
         "all",
     )
@@ -579,9 +638,9 @@ def run_wizard() -> int:
     if author_choice == "me":
         answers["author"] = "me"
     elif author_choice == "custom":
-        author = Prompt.ask("Author name or email", default="")
-        if author:
-            answers["author"] = author
+        authors = _choose_authors(repo)
+        if authors:
+            answers["authors"] = authors
     if ai_report["cli_harnesses"]:
         print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))
     if preset == "branch":

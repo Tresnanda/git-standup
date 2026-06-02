@@ -579,6 +579,19 @@ def test_build_wizard_args_for_this_week_by_me_ai_report() -> None:
     assert args == ["--days", "7", "--author", "me"]
 
 
+def test_build_wizard_args_for_multiple_selected_authors() -> None:
+    args = cli.build_wizard_args(
+        {
+            "repo": ".",
+            "preset": "week",
+            "authors": ["Alice", "Casey"],
+            "format": "ai",
+        }
+    )
+
+    assert args == ["--days", "7", "--author", "Alice|Casey"]
+
+
 def test_build_wizard_args_for_today_everyone_ai_report() -> None:
     args = cli.build_wizard_args(
         {
@@ -710,6 +723,34 @@ def test_run_wizard_guides_file_saving(
     assert "Me - Only commits authored by me." in out
     assert "AI summary - Use your configured AI provider or CLI for a polished draft." in out
     assert "Generated command:\n  git-standup --days 7 --author me --output standup.txt" in out
+
+
+def test_run_wizard_uses_multi_author_picker_for_someone_else(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answers = iter([".", "2", "3", "1,3", "1"])
+    confirms = iter([False, True])
+    captured: dict[str, object] = {}
+
+    def fake_main(args: list[str]) -> int:
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+    monkeypatch.setattr(cli, "_recent_authors", lambda _repo: ["Alice", "Bob", "Casey"])
+    monkeypatch.setattr(cli, "main", fake_main)
+
+    assert cli.run_wizard() == 0
+
+    assert captured["args"] == ["--days", "7", "--author", "Alice|Casey"]
+    out = capsys.readouterr().out
+    assert "Choose authors:" in out
+    assert "1) Alice" in out
+    assert "3) Casey" in out
+    assert "Generated command:\n  git-standup --days 7 --author 'Alice|Casey'" in out
 
 
 def test_main_opens_wizard_for_bare_interactive_command(
