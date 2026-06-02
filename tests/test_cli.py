@@ -50,6 +50,74 @@ def test_json_mode_prints_structured_commit_data(monkeypatch: pytest.MonkeyPatch
     output = json.loads(capsys.readouterr().out)
     assert output["Alice"]["2026-03-10"]["stats"]["total_commits"] == 1
     assert output["Alice"]["2026-03-10"]["commits"][0]["subject"] == "Add authentication"
+    assert "_metadata" not in output
+
+
+def test_json_mode_includes_budget_metadata_when_limited(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    captured: dict[str, object] = {}
+    commits = [
+        {
+            "hash": "abc123",
+            "author_name": "Alice",
+            "author_email": "alice@example.com",
+            "date": "2026-03-10T09:15:00+00:00",
+            "subject": "Add authentication",
+            "body": "",
+            "files": [
+                {"path": "src/auth.py", "insertions": 12, "deletions": 2},
+                {"path": "tests/test_auth.py", "insertions": 4, "deletions": 0},
+            ],
+        },
+        {
+            "hash": "def456",
+            "author_name": "Alice",
+            "author_email": "alice@example.com",
+            "date": "2026-03-10T10:15:00+00:00",
+            "subject": "Fix login redirect",
+            "body": "",
+            "files": [{"path": "src/login.py", "insertions": 3, "deletions": 1}],
+        },
+        {
+            "hash": "ghi789",
+            "author_name": "Alice",
+            "author_email": "alice@example.com",
+            "date": "2026-03-10T11:15:00+00:00",
+            "subject": "Document auth",
+            "body": "",
+            "files": [{"path": "README.md", "insertions": 2, "deletions": 0}],
+        },
+    ]
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return commits
+
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(["--json", "--max-commits", "2", "--max-files-per-commit", "1"])
+
+    assert exit_code == 0
+    assert captured["max_commits"] == 3
+    output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"] == {
+        "truncated": True,
+        "limits": {"max_commits": 2, "max_files_per_commit": 1},
+        "commits_included": 2,
+        "commits_truncated": True,
+        "more_commits_available": True,
+        "files_truncated": True,
+        "commits_with_files_truncated": 1,
+        "files_omitted": 1,
+    }
+    output_commits = output["Alice"]["2026-03-10"]["commits"]
+    assert [commit["hash"] for commit in output_commits] == ["abc123", "def456"]
+    assert output_commits[0]["files"] == [
+        {"path": "src/auth.py", "insertions": 12, "deletions": 2}
+    ]
+    assert output_commits[0]["truncated"] == {"files": True, "files_omitted": 1}
 
 
 def test_markdown_mode_prints_paste_ready_summary(

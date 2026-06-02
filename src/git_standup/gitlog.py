@@ -40,6 +40,7 @@ def get_commits(
     repo_path: str | None = None,
     since: str | None = None,
     until: str | None = None,
+    max_commits: int | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for the last N days.
 
@@ -74,6 +75,9 @@ def get_commits(
 
     if until:
         cmd.insert(5, f"--until={until}")
+
+    if max_commits is not None:
+        cmd.extend(["-n", str(max_commits)])
 
     if base_branch:
         cmd.extend([f"{base_branch}..HEAD"])
