@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import subprocess
@@ -439,7 +440,7 @@ def prompt_for_update_if_available() -> bool:
     check = check_for_update()
     if not check.available:
         return False
-    if Confirm.ask(f"New {APP_NAME} update found. Update now?", default=False):
+    if _confirm(f"New {APP_NAME} update found. Update now?", default=False):
         run_update()
         return True
     return False
@@ -523,6 +524,12 @@ def _default_output_path(output_format: str) -> str:
 
 
 def _choice(message: str, choices: list[str], default: str) -> str:
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return _interactive_choice(
+            message,
+            [(choice, choice, "") for choice in choices],
+            default,
+        )
     return Prompt.ask(message, choices=choices, default=default)
 
 
@@ -531,6 +538,9 @@ def _numbered_choice(
     options: list[tuple[str, str, str]],
     default: str,
 ) -> str:
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return _interactive_choice(message, options, default)
+
     print(f"\n{message}:")
     default_index = "1"
     allowed: list[str] = []
@@ -546,13 +556,110 @@ def _numbered_choice(
 
 
 def _read_terminal_key() -> str:
-    key = read_single_key()
-    if key == "\x1b":
-        try:
-            return key + sys.stdin.read(2)
-        except OSError:
-            return key
-    return key
+    if not sys.stdin.isatty():
+        return read_single_key()
+
+    try:  # Windows
+        import msvcrt  # type: ignore[import-not-found]
+
+        key = msvcrt.getwch()
+        if key in {"\x00", "\xe0"}:
+            return key + msvcrt.getwch()
+        return key
+    except ImportError:
+        pass
+
+    try:  # Unix
+        import termios
+        import tty
+    except ImportError:
+        return read_single_key()
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        key = sys.stdin.read(1)
+        if key == "\x1b":
+            while True:
+                ready, _, _ = select.select([sys.stdin], [], [], 0.01)
+                if not ready:
+                    break
+                key += sys.stdin.read(1)
+        return key
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _move_cursor_up(lines: int) -> None:
+    if lines > 0:
+        print(f"\x1b[{lines}F\x1b[J", end="")
+
+
+def _interactive_choice(
+    title: str,
+    options: list[tuple[str, str, str]],
+    default: str,
+    *,
+    key_reader=_read_terminal_key,
+) -> str:
+    if not options:
+        raise ValueError("options must not be empty")
+
+    cursor = next(
+        (index for index, (value, _label, _description) in enumerate(options) if value == default),
+        0,
+    )
+    rendered_lines = 0
+
+    def render() -> None:
+        nonlocal rendered_lines
+        _move_cursor_up(rendered_lines)
+        print(f"{title}:")
+        print("Use Up/Down to move, Enter to choose, q to cancel.")
+        for index, (_value, label, description) in enumerate(options):
+            pointer = ">" if index == cursor else " "
+            suffix = f" - {description}" if description else ""
+            print(f"{pointer} {label}{suffix}")
+        rendered_lines = len(options) + 2
+
+    while True:
+        render()
+        key = key_reader()
+        if key in {"\r", "\n"}:
+            return options[cursor][0]
+        if key.lower() == "q":
+            return default
+        if key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
+            cursor = (cursor + 1) % len(options)
+        elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
+            cursor = (cursor - 1) % len(options)
+
+
+def _interactive_confirm(
+    title: str,
+    *,
+    default: bool,
+    key_reader=_read_terminal_key,
+) -> bool:
+    return (
+        _interactive_choice(
+            title,
+            [
+                ("yes", "Yes", ""),
+                ("no", "No", ""),
+            ],
+            "yes" if default else "no",
+            key_reader=key_reader,
+        )
+        == "yes"
+    )
+
+
+def _confirm(message: str, *, default: bool) -> bool:
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return _interactive_confirm(message, default=default)
+    return Confirm.ask(message, default=default)
 
 
 def _interactive_multi_select(
@@ -566,19 +673,18 @@ def _interactive_multi_select(
 
     selected: set[int] = set()
     cursor = 0
-    rendered = False
+    rendered_lines = 0
 
     def render() -> None:
-        nonlocal rendered
-        if rendered:
-            print(f"\x1b[{len(options) + 2}F\x1b[J", end="")
-        print(f"\n{title}")
+        nonlocal rendered_lines
+        _move_cursor_up(rendered_lines)
+        print(f"{title}:")
         print("Use Up/Down to move, Space selects, Enter confirms, a selects all, q cancels.")
         for index, option in enumerate(options):
             pointer = ">" if index == cursor else " "
             mark = "[x]" if index in selected else "[ ]"
             print(f"{pointer} {mark} {option}")
-        rendered = True
+        rendered_lines = len(options) + 2
 
     while True:
         render()
@@ -594,9 +700,9 @@ def _interactive_multi_select(
                 selected.remove(cursor)
             else:
                 selected.add(cursor)
-        elif key in {"\x1b[B", "j"}:
+        elif key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
             cursor = (cursor + 1) % len(options)
-        elif key in {"\x1b[A", "k"}:
+        elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
             cursor = (cursor - 1) % len(options)
 
 
@@ -795,7 +901,7 @@ def _prompt_api_key(provider: str) -> None:
         print(f"Skipped key entry. Set {key_name} in your environment to use AI mode.")
         return
     os.environ[key_name] = key
-    if Confirm.ask(f"Save {key_name} to your shell profile for future runs?", default=False):
+    if _confirm(f"Save {key_name} to your shell profile for future runs?", default=False):
         target = persist_env_var(key_name, key)
         if target == "setx":
             print(f"Saved {key_name} via setx. Open a new terminal to load it.")
@@ -1010,7 +1116,7 @@ def run_wizard() -> int:
     if answers["format"] in {"json", "changelog"}:
         answers["ai"] = False
     elif _ai_provider_available(ai_report):
-        answers["ai"] = Confirm.ask("Polish with AI?", default=True)
+        answers["ai"] = _confirm("Polish with AI?", default=True)
     else:
         ai_choice = _numbered_choice(
             "Polish with AI? No AI provider detected",
@@ -1025,13 +1131,13 @@ def run_wizard() -> int:
         else:
             answers["ai"] = False
 
-    if Confirm.ask("Save report to a file?", default=False):
+    if _confirm("Save report to a file?", default=False):
         output_format = str(answers["format"])
         answers["output"] = Prompt.ask("Save as", default=_default_output_path(output_format))
 
     args = build_wizard_args(answers)
     print(f"\nGenerated command:\n  {_format_command(args)}\n")
-    if Confirm.ask("Run it now", default=True):
+    if _confirm("Run it now", default=True):
         return main(args)
     return 0
 

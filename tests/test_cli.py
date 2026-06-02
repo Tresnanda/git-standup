@@ -1090,6 +1090,38 @@ def test_multi_select_uses_arrow_keys_and_space_to_select(
     assert "Space selects" in out
 
 
+def test_interactive_choice_uses_arrow_keys_to_select(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter(["\x1b[B", "\r"])
+
+    selected = cli._interactive_choice(
+        "Output format",
+        [
+            ("markdown", "Markdown", "Paste-ready Markdown."),
+            ("text", "Plain text", "Simple terminal summary."),
+        ],
+        "markdown",
+        key_reader=lambda: next(keys),
+    )
+
+    assert selected == "text"
+    out = capsys.readouterr().out
+    assert "Output format:" in out
+    assert "Use Up/Down to move" in out
+    assert "\x1b[4F\x1b[J" in out
+
+
+def test_interactive_confirm_uses_same_selector() -> None:
+    keys = iter(["\x1b[B", "\r"])
+
+    assert cli._interactive_confirm(
+        "Run it now",
+        default=True,
+        key_reader=lambda: next(keys),
+    ) is False
+
+
 def test_main_opens_wizard_for_bare_interactive_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
