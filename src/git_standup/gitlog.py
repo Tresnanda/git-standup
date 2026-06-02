@@ -41,6 +41,7 @@ def get_commits(
     since: str | None = None,
     until: str | None = None,
     max_commits: int | None = None,
+    pathspecs: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for the last N days.
 
@@ -87,6 +88,10 @@ def get_commits(
             # Get current user's name and email
             author = _get_current_user(repo_root)
         cmd.extend([f"--author={author}"])
+
+    if pathspecs:
+        cmd.append("--")
+        cmd.extend(pathspecs)
 
     try:
         result = subprocess.run(

@@ -12,6 +12,7 @@ Generate standup-ready summaries from Git history.
 - Exports structured JSON for automation and reporting.
 - Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
 - Can run against another repository path with `--repo`.
+- Can focus reports on one or more paths with repeatable `--path` filters.
 - Supports exact report windows with `--since` and `--until`.
 - Writes summaries directly to files with `--output`.
 - Supports AI summaries through OpenAI-compatible chat-completion APIs.
@@ -135,6 +136,15 @@ Run from anywhere against another repository:
 git-standup ../api --markdown
 ```
 
+Focus a report on commits that touched specific paths:
+
+```bash
+git-standup --path src --path tests --no-ai
+```
+
+Path filters are Git pathspecs passed to `git log` after `--`, so they work with
+`--repo`, date filters, author filters, and branch comparisons.
+
 Generate an exact reporting window:
 
 ```bash
@@ -249,8 +259,8 @@ Markdown mode preserves the local, no-AI workflow while producing output that is
 ```text
 usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
-                   [--base-branch BASE_BRANCH] [--json] [--no-ai]
-                   [--ai] [--markdown] [--output OUTPUT]
+                   [--base-branch BASE_BRANCH] [--path PATH] [--json]
+                   [--no-ai] [--ai] [--markdown] [--output OUTPUT]
                    [--api-key API_KEY] [--provider PROVIDER]
                    [--harness HARNESS] [--model MODEL]
                    [--base-url BASE_URL] [--version] [--no-wizard]
@@ -265,6 +275,9 @@ options:
   --until DATE         End date for the report window, in YYYY-MM-DD format.
   --author AUTHOR      Filter by author. Use "me" for the current Git user.
   --base-branch NAME   Show commits in HEAD that are not in this base branch.
+  --path, --pathspec PATH
+                        Only include commits touching this pathspec. Repeat for
+                        multiple paths.
   --json               Print structured JSON (always raw; AI is ignored).
   --no-ai              Skip AI and print a raw formatted summary.
   --ai                 Force AI mode (default for text/markdown; ignored with --json).
