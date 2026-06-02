@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -702,6 +703,18 @@ def test_build_wizard_args_json_ignores_ai_toggle() -> None:
     )
 
     assert args == ["--since", "2026-06-02", "--json"]
+
+
+def test_today_start_string_uses_local_midnight_with_timezone() -> None:
+    now = datetime(2026, 6, 2, 14, 17, 14, tzinfo=timezone(timedelta(hours=8)))
+
+    assert cli._today_start_string(now) == "2026-06-02 00:00:00 +0800"
+
+
+def test_parse_args_accepts_explicit_since_timestamp() -> None:
+    args = cli.parse_args(["--since", "2026-06-02 00:00:00 +0800"])
+
+    assert args.since == "2026-06-02 00:00:00 +0800"
 
 
 def test_build_wizard_args_changelog_is_raw_markdown_release_notes() -> None:
