@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +46,7 @@ DIST_NAME = "git-standup"
 REPO_URL = "https://github.com/Tresnanda/git-standup.git"
 REPO_SPEC = f"git+{REPO_URL}"
 MIN_PYTHON = (3, 10)
+REPOSITORIES_KEY = "_repositories"
 
 
 @dataclass
@@ -148,6 +150,16 @@ def _with_json_metadata(
     if not metadata:
         return commit_data
     return {"_metadata": metadata, **commit_data}
+
+
+def _build_multi_repo_commit_data(
+    repo_commits: list[tuple[str, list[dict[str, Any]]]],
+) -> dict[str, Any]:
+    return {
+        REPOSITORIES_KEY: {
+            repo_name: _build_commit_data(commits) for repo_name, commits in repo_commits
+        }
+    }
 
 
 def _positive_int(value: str) -> int:
@@ -436,9 +448,14 @@ def prompt_for_update_if_available() -> bool:
 def build_wizard_args(answers: dict[str, object]) -> list[str]:
     """Build deterministic git-standup arguments from wizard answers."""
     args: list[str] = []
-    repo = str(answers.get("repo") or ".")
-    if repo != ".":
-        args.extend(["--repo", repo])
+    remote_repos = answers.get("remote_repos")
+    if isinstance(remote_repos, list) and remote_repos:
+        for repo in remote_repos:
+            args.extend(["--remote-repo", str(repo)])
+    else:
+        repo = str(answers.get("repo") or ".")
+        if repo != ".":
+            args.extend(["--repo", repo])
 
     preset = str(answers.get("preset") or "week")
     if preset == "today":
@@ -528,6 +545,61 @@ def _numbered_choice(
     return options[int(choice) - 1][0]
 
 
+def _read_terminal_key() -> str:
+    key = read_single_key()
+    if key == "\x1b":
+        try:
+            return key + sys.stdin.read(2)
+        except OSError:
+            return key
+    return key
+
+
+def _interactive_multi_select(
+    title: str,
+    options: list[str],
+    *,
+    key_reader=_read_terminal_key,
+) -> list[str]:
+    if not options:
+        return []
+
+    selected: set[int] = set()
+    cursor = 0
+    rendered = False
+
+    def render() -> None:
+        nonlocal rendered
+        if rendered:
+            print(f"\x1b[{len(options) + 2}F\x1b[J", end="")
+        print(f"\n{title}")
+        print("Use Up/Down to move, Space selects, Enter confirms, a selects all, q cancels.")
+        for index, option in enumerate(options):
+            pointer = ">" if index == cursor else " "
+            mark = "[x]" if index in selected else "[ ]"
+            print(f"{pointer} {mark} {option}")
+        rendered = True
+
+    while True:
+        render()
+        key = key_reader()
+        if key in {"\r", "\n"}:
+            return [option for index, option in enumerate(options) if index in selected]
+        if key.lower() == "q":
+            return []
+        if key.lower() == "a":
+            selected = set(range(len(options)))
+        elif key in {" ", "\t"}:
+            if cursor in selected:
+                selected.remove(cursor)
+            else:
+                selected.add(cursor)
+        elif key in {"\x1b[B", "j"}:
+            cursor = (cursor + 1) % len(options)
+        elif key in {"\x1b[A", "k"}:
+            cursor = (cursor - 1) % len(options)
+
+
 def _recent_authors(repo: str) -> list[str]:
     cmd = ["git"]
     if repo != ".":
@@ -574,6 +646,9 @@ def _parse_author_selection(raw: str, authors: list[str]) -> list[str]:
 def _choose_authors(repo: str) -> list[str]:
     authors = _recent_authors(repo)
     if authors:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            return _interactive_multi_select("Choose authors", authors)
+
         print("\nChoose authors:")
         for index, author in enumerate(authors, start=1):
             print(f"  {index}) {author}")
@@ -582,6 +657,105 @@ def _choose_authors(repo: str) -> list[str]:
 
     raw = Prompt.ask("Author names or emails (comma-separated)", default="")
     return _parse_author_selection(raw, [])
+
+
+def _remote_repositories() -> list[str]:
+    gh = shutil.which("gh")
+    if not gh:
+        return []
+    try:
+        result = subprocess.run(
+            [gh, "repo", "list", "--limit", "100", "--json", "nameWithOwner"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return []
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    repos: list[str] = []
+    for item in payload:
+        if isinstance(item, dict) and isinstance(item.get("nameWithOwner"), str):
+            repos.append(item["nameWithOwner"])
+    return repos
+
+
+def _parse_remote_repo_selection(raw: str, repos: list[str]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for token in (item.strip() for item in raw.split(",")):
+        if not token:
+            continue
+        repo = token
+        if token.isdigit():
+            index = int(token) - 1
+            if 0 <= index < len(repos):
+                repo = repos[index]
+        if repo not in seen:
+            selected.append(repo)
+            seen.add(repo)
+    return selected
+
+
+def _choose_remote_repositories() -> list[str]:
+    repos = _remote_repositories()
+    if repos:
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            return _interactive_multi_select("Choose remote repositories", repos)
+
+        print("\nChoose remote repositories:")
+        for index, repo in enumerate(repos, start=1):
+            print(f"  {index}) {repo}")
+        raw = Prompt.ask("Repository choices (comma-separated numbers or owner/name)", default="")
+        return _parse_remote_repo_selection(raw, repos)
+
+    raw = Prompt.ask("Remote repositories (comma-separated owner/name or URL)", default="")
+    return _parse_remote_repo_selection(raw, [])
+
+
+def _remote_repo_label(repo: str) -> str:
+    cleaned = repo.rstrip("/")
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    if cleaned.startswith("https://github.com/"):
+        cleaned = cleaned.removeprefix("https://github.com/")
+    elif cleaned.startswith("git@github.com:"):
+        cleaned = cleaned.removeprefix("git@github.com:")
+    return cleaned
+
+
+def _remote_repo_url(repo: str) -> str:
+    if repo.startswith(("http://", "https://", "git@")):
+        return repo
+    return f"https://github.com/{repo}.git"
+
+
+def _safe_repo_dir_name(repo: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "__", _remote_repo_label(repo)).strip("_") or "repo"
+
+
+def _clone_remote_repo(repo: str, parent: Path) -> Path:
+    target = parent / _safe_repo_dir_name(repo)
+    gh = shutil.which("gh")
+    if gh:
+        cmd = [gh, "repo", "clone", repo, str(target), "--", "--filter=blob:none"]
+    else:
+        cmd = ["git", "clone", "--filter=blob:none", _remote_repo_url(repo), str(target)]
+    try:
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"Could not clone remote repository {repo}") from exc
+    return target
 
 
 def _format_command(args: list[str]) -> str:
@@ -758,7 +932,22 @@ def run_config_command(args: argparse.Namespace) -> int:
 
 def run_wizard() -> int:
     """Interactive command builder for git-standup."""
-    repo = Prompt.ask("Repository path", default=".")
+    repo_source = _numbered_choice(
+        "Repository source",
+        [
+            ("current", "Current directory", "Use this Git repository."),
+            ("other", "Other directory", "Choose a local Git repository path."),
+            ("remote", "Remote repository", "Pick one or more GitHub repositories."),
+        ],
+        "current",
+    )
+    repo = "."
+    remote_repos: list[str] = []
+    if repo_source == "other":
+        repo = Prompt.ask("Repository path", default=".")
+    elif repo_source == "remote":
+        remote_repos = _choose_remote_repositories()
+
     preset = _numbered_choice(
         "Review changes from",
         [
@@ -783,12 +972,19 @@ def run_wizard() -> int:
         "repo": repo,
         "preset": preset,
     }
+    if remote_repos:
+        answers["remote_repos"] = remote_repos
     if author_choice == "me":
         answers["author"] = "me"
     elif author_choice == "custom":
-        authors = _choose_authors(repo)
-        if authors:
-            answers["authors"] = authors
+        if remote_repos:
+            author = Prompt.ask("Author name or email", default="")
+            if author:
+                answers["author"] = author
+        else:
+            authors = _choose_authors(repo)
+            if authors:
+                answers["authors"] = authors
     if ai_report["cli_harnesses"]:
         print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))
     if preset == "branch":
@@ -857,6 +1053,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup ../api --markdown   # Run against another repository\n"
         "  git-standup --days 1            # Yesterday only\n"
         "  git-standup --repo ../api       # Run against another repository\n"
+        "  git-standup --remote-repo owner/api --remote-repo owner/web\n"
         "  git-standup --path src --path tests  # Only commits touching paths\n"
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
         "  git-standup --author me         # My commits only\n"
@@ -893,6 +1090,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to the git repository to analyze (default: current directory)",
+    )
+    parser.add_argument(
+        "--remote-repo",
+        dest="remote_repos",
+        action="append",
+        default=None,
+        metavar="OWNER/NAME",
+        help="GitHub repository to clone and include in the report. Repeat for multiple repos.",
     )
     parser.add_argument(
         "--since",
@@ -1056,11 +1261,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 parser.error(
                     "provide a repository path either positionally or with --repo, not both"
                 )
+            if args.remote_repos:
+                parser.error("positional repository paths cannot be combined with --remote-repo")
             args.repo = target
     if args.changelog and args.json:
         parser.error("--changelog cannot be combined with --json")
     if args.changelog and args.markdown:
         parser.error("--changelog cannot be combined with --markdown; it already emits Markdown")
+    if args.remote_repos and args.repo is not None:
+        parser.error("--remote-repo cannot be combined with --repo or a positional repo path")
     del args.tokens
     return args
 
@@ -1090,17 +1299,50 @@ def main(argv: list[str] | None = None) -> int:
         commit_fetch_limit = (
             args.max_commits + 1 if args.max_commits is not None else None
         )
-        commits = get_commits(
-            days=args.days,
-            author=args.author,
-            base_branch=args.base_branch,
-            repo_path=args.repo,
-            since=args.since,
-            until=args.until,
-            max_commits=commit_fetch_limit,
-            exclude_merges=args.exclude_merges,
-            pathspecs=args.pathspecs,
-        )
+        budget_metadata: dict[str, Any] | None = None
+        multi_repo_commit_data: dict[str, Any] | None = None
+        if args.remote_repos:
+            repo_commits: list[tuple[str, list[dict[str, Any]]]] = []
+            all_commits: list[dict[str, Any]] = []
+            with tempfile.TemporaryDirectory() as temp_dir:
+                parent = Path(temp_dir)
+                for remote_repo in args.remote_repos:
+                    repo_path = _clone_remote_repo(remote_repo, parent)
+                    repo_name = _remote_repo_label(remote_repo)
+                    fetched = get_commits(
+                        days=args.days,
+                        author=args.author,
+                        base_branch=args.base_branch,
+                        repo_path=str(repo_path),
+                        since=args.since,
+                        until=args.until,
+                        max_commits=commit_fetch_limit,
+                        exclude_merges=args.exclude_merges,
+                        pathspecs=args.pathspecs,
+                    )
+                    fetched, _repo_budget_metadata = _apply_output_budget(
+                        fetched,
+                        max_commits=args.max_commits,
+                        max_files_per_commit=args.max_files_per_commit,
+                    )
+                    for commit in fetched:
+                        commit["repository"] = repo_name
+                    repo_commits.append((repo_name, fetched))
+                    all_commits.extend(fetched)
+            commits = all_commits
+            multi_repo_commit_data = _build_multi_repo_commit_data(repo_commits)
+        else:
+            commits = get_commits(
+                days=args.days,
+                author=args.author,
+                base_branch=args.base_branch,
+                repo_path=args.repo,
+                since=args.since,
+                until=args.until,
+                max_commits=commit_fetch_limit,
+                exclude_merges=args.exclude_merges,
+                pathspecs=args.pathspecs,
+            )
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -1109,11 +1351,12 @@ def main(argv: list[str] | None = None) -> int:
         print("No commits found in the specified time range.")
         return 0
 
-    commits, budget_metadata = _apply_output_budget(
-        commits,
-        max_commits=args.max_commits,
-        max_files_per_commit=args.max_files_per_commit,
-    )
+    if multi_repo_commit_data is None:
+        commits, budget_metadata = _apply_output_budget(
+            commits,
+            max_commits=args.max_commits,
+            max_files_per_commit=args.max_files_per_commit,
+        )
 
     if args.changelog:
         if args.ai:
@@ -1125,7 +1368,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit_markdown(changelog, args.output)
         return 0
 
-    commit_data = _build_commit_data(commits)
+    commit_data = multi_repo_commit_data or _build_commit_data(commits)
 
     if args.json:
         if args.ai:
@@ -1147,10 +1390,13 @@ def main(argv: list[str] | None = None) -> int:
             markdown = build_markdown_output(commit_data)
             _emit_markdown(markdown, args.output)
         else:
+            text_output = build_text_output(commit_data)
             _emit(
-                build_text_output(commit_data),
+                text_output,
                 args.output,
-                lambda: print_text_standup(commit_data),
+                lambda: print(text_output, end="")
+                if multi_repo_commit_data is not None
+                else print_text_standup(commit_data),
             )
 
     if args.no_ai:

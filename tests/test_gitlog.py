@@ -176,3 +176,49 @@ def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
     assert "--no-merges" in log_cmd
     separator_index = log_cmd.index("--")
     assert log_cmd[separator_index + 1 :] == ["src", "tests/test_cli.py"]
+
+
+def test_get_commits_fetches_multiple_authors_separately(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
+        author_arg = next((part for part in cmd if part.startswith("--author=")), "")
+        if author_arg == "--author=Kevin":
+            stdout = """---COMMIT---
+hash:abc123
+author:Kevin
+email:kevin@example.com
+date:2026-03-10T09:15:00+00:00
+subject:Add Kevin work
+body:
+1	0	src/kevin.py
+"""
+        elif author_arg == "--author=YusufRehan":
+            stdout = """---COMMIT---
+hash:def456
+author:YusufRehan
+email:yusuf@example.com
+date:2026-03-10T10:15:00+00:00
+subject:Add Yusuf work
+body:
+2	0	src/yusuf.py
+"""
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    commits = get_commits(repo_path="/workspace/app", author="Kevin|YusufRehan")
+
+    log_calls = [cmd for cmd in calls if "log" in cmd]
+    assert ["--author=Kevin"] == [
+        part for part in log_calls[0] if part.startswith("--author=")
+    ]
+    assert ["--author=YusufRehan"] == [
+        part for part in log_calls[1] if part.startswith("--author=")
+    ]
+    assert [commit["author_name"] for commit in commits] == ["YusufRehan", "Kevin"]

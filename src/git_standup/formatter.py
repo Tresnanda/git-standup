@@ -48,6 +48,17 @@ _CONVENTIONAL_SUBJECT_RE = re.compile(
     r"(?P<breaking>!)?:\s*(?P<description>.+)$"
 )
 
+_REPOSITORIES_KEY = "_repositories"
+
+
+def _repository_sections(
+    commit_data: dict[str, Any],
+) -> list[tuple[str | None, dict[str, Any]]]:
+    repositories = commit_data.get(_REPOSITORIES_KEY)
+    if isinstance(repositories, dict):
+        return [(str(name), data) for name, data in repositories.items() if isinstance(data, dict)]
+    return [(None, commit_data)]
+
 
 def build_json_output(
     commit_data: dict[str, Any],
@@ -62,37 +73,46 @@ def build_markdown_output(
     """Build a paste-ready Markdown standup summary."""
     lines = ["# Standup Summary", ""]
 
-    for author, days in commit_data.items():
-        lines.extend([f"## {author}", ""])
-        for date_key, day_data in days.items():
-            lines.extend([f"### {date_key}", ""])
-            for commit in day_data.get("commits", []):
-                hash_short = commit.get("hash", "")[:8]
-                subject = commit.get("subject", "")
-                lines.append(f"- `{hash_short}` {subject}")
+    for repo_name, repo_data in _repository_sections(commit_data):
+        if repo_name is not None:
+            lines.extend([f"## {repo_name}", ""])
+            author_heading = "###"
+            date_heading = "####"
+        else:
+            author_heading = "##"
+            date_heading = "###"
 
-                files = commit.get("files", [])
-                if files:
-                    lines.append("  - Files:")
-                    for file_stat in files:
-                        path = file_stat.get("path", "")
-                        insertions = file_stat.get("insertions", 0)
-                        deletions = file_stat.get("deletions", 0)
-                        lines.append(f"    - `{path}` (+{insertions}/-{deletions})")
+        for author, days in repo_data.items():
+            lines.extend([f"{author_heading} {author}", ""])
+            for date_key, day_data in days.items():
+                lines.extend([f"{date_heading} {date_key}", ""])
+                for commit in day_data.get("commits", []):
+                    hash_short = commit.get("hash", "")[:8]
+                    subject = commit.get("subject", "")
+                    lines.append(f"- `{hash_short}` {subject}")
 
-            stats = day_data.get("stats", {})
-            lines.extend(
-                [
-                    "",
-                    (
-                        f"_Stats: {stats.get('total_commits', 0)} commit(s), "
-                        f"{stats.get('total_files', 0)} file(s), "
-                        f"+{stats.get('total_insertions', 0)}/"
-                        f"-{stats.get('total_deletions', 0)} lines_"
-                    ),
-                    "",
-                ]
-            )
+                    files = commit.get("files", [])
+                    if files:
+                        lines.append("  - Files:")
+                        for file_stat in files:
+                            path = file_stat.get("path", "")
+                            insertions = file_stat.get("insertions", 0)
+                            deletions = file_stat.get("deletions", 0)
+                            lines.append(f"    - `{path}` (+{insertions}/-{deletions})")
+
+                stats = day_data.get("stats", {})
+                lines.extend(
+                    [
+                        "",
+                        (
+                            f"_Stats: {stats.get('total_commits', 0)} commit(s), "
+                            f"{stats.get('total_files', 0)} file(s), "
+                            f"+{stats.get('total_insertions', 0)}/"
+                            f"-{stats.get('total_deletions', 0)} lines_"
+                        ),
+                        "",
+                    ]
+                )
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -281,41 +301,46 @@ def build_text_output(
     total_deletions = 0
     all_files: set[str] = set()
 
-    for author, days in commit_data.items():
-        lines.extend([author, "-" * len(author)])
-        author_insertions = 0
-        author_deletions = 0
-        author_commits = 0
+    for repo_name, repo_data in _repository_sections(commit_data):
+        if repo_name is not None:
+            lines.extend([f"Repository: {repo_name}", "=" * (12 + len(repo_name)), ""])
 
-        for date_key, day_data in days.items():
-            lines.append(f"  {date_key}")
-            for commit in day_data.get("commits", []):
-                author_commits += 1
-                hash_short = commit.get("hash", "")[:8]
-                subject = commit.get("subject", "")
-                lines.append(f"    [{hash_short}] {subject}")
+        for author, days in repo_data.items():
+            lines.extend([author, "-" * len(author)])
+            author_insertions = 0
+            author_deletions = 0
+            author_commits = 0
 
-                for file_stat in commit.get("files", []):
-                    path = file_stat.get("path", "")
-                    insertions = file_stat.get("insertions", 0)
-                    deletions = file_stat.get("deletions", 0)
-                    all_files.add(path)
-                    author_insertions += insertions
-                    author_deletions += deletions
-                    lines.append(f"      - {path} (+{insertions}/-{deletions})")
+            for date_key, day_data in days.items():
+                lines.append(f"  {date_key}")
+                for commit in day_data.get("commits", []):
+                    author_commits += 1
+                    hash_short = commit.get("hash", "")[:8]
+                    subject = commit.get("subject", "")
+                    lines.append(f"    [{hash_short}] {subject}")
 
-                body = commit.get("body", "")
-                if body and body.strip():
-                    lines.append(f"      {body.strip().splitlines()[0][:120]}")
+                    for file_stat in commit.get("files", []):
+                        path = file_stat.get("path", "")
+                        insertions = file_stat.get("insertions", 0)
+                        deletions = file_stat.get("deletions", 0)
+                        all_files.add(path)
+                        author_insertions += insertions
+                        author_deletions += deletions
+                        lines.append(f"      - {path} (+{insertions}/-{deletions})")
+
+                    body = commit.get("body", "")
+                    if body and body.strip():
+                        lines.append(f"      {body.strip().splitlines()[0][:120]}")
+                lines.append("")
+
+            total_commits += author_commits
+            total_insertions += author_insertions
+            total_deletions += author_deletions
+            lines.append(
+                f"  Stats: {author_commits} commit(s), "
+                f"+{author_insertions}/-{author_deletions} lines"
+            )
             lines.append("")
-
-        total_commits += author_commits
-        total_insertions += author_insertions
-        total_deletions += author_deletions
-        lines.append(
-            f"  Stats: {author_commits} commit(s), +{author_insertions}/-{author_deletions} lines"
-        )
-        lines.append("")
 
     lines.extend(
         [
