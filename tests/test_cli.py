@@ -1239,7 +1239,7 @@ def test_terminal_key_reader_reads_full_arrow_escape_sequence(
         tcgetattr=lambda _fd: "old",
         tcsetattr=lambda *_args: None,
     )
-    fake_tty = types.SimpleNamespace(setraw=lambda _fd: None)
+    fake_tty = types.SimpleNamespace(setcbreak=lambda _fd: None)
 
     monkeypatch.setattr(cli.sys, "stdin", TtyStdin())
     monkeypatch.setitem(cli.sys.modules, "msvcrt", None)
@@ -1249,6 +1249,36 @@ def test_terminal_key_reader_reads_full_arrow_escape_sequence(
     monkeypatch.setattr(cli.select, "select", lambda *_args: next(ready))
 
     assert cli._read_terminal_key() == "\x1b[B"
+
+
+def test_raw_terminal_session_preserves_output_newline_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("termios")
+    import pty
+    import termios
+
+    primary, secondary = pty.openpty()
+
+    class PtyStdin:
+        def isatty(self) -> bool:
+            return True
+
+        def fileno(self) -> int:
+            return secondary
+
+    monkeypatch.setattr(cli.sys, "stdin", PtyStdin())
+    monkeypatch.setattr(cli.sys, "platform", "linux")
+
+    try:
+        with cli._raw_terminal_session(True):
+            attrs = termios.tcgetattr(secondary)
+        # OPOST (output post-processing, which maps \n -> \r\n) must stay on so
+        # the picker's print()-based redraw doesn't staircase across the screen.
+        assert attrs[1] & termios.OPOST
+    finally:
+        os.close(primary)
+        os.close(secondary)
 
 
 def test_main_opens_wizard_for_bare_interactive_command(
