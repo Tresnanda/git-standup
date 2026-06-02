@@ -68,7 +68,10 @@ Run from inside any Git repository:
 git-standup week
 ```
 
-On an interactive terminal, the bare command opens a guided command builder with numbered choices for the report type and output style, then shows the generated command before running it:
+On an interactive terminal, the bare command opens a guided command builder.
+Use Up/Down to move through choices, Enter to choose, and Space to select
+multiple authors or repositories. The wizard shows the generated command before
+running it:
 
 ```bash
 git-standup
@@ -79,28 +82,30 @@ Example wizard choices:
 
 ```text
 Repository source:
-  1) Current directory - Use this Git repository.
-  2) Other directory - Choose a local Git repository path.
-  3) Remote repository - Pick one or more GitHub repositories.
+> Current directory - Use this Git repository.
+  Other directory - Choose a local Git repository path.
+  Remote repository - Pick one or more GitHub repositories.
 
 Review changes from:
-  1) Today - Changes since today began.
-  2) This week - Last 7 days.
-  3) Custom range - Choose how many days to review.
-  4) Branch changes - Compare this branch against a base branch.
+  Today - Changes since today began.
+> This week - Last 7 days.
+  Custom range - Choose how many days to review.
+  Branch changes - Compare this branch against a base branch.
 
 By who:
-  1) Everyone - All contributors.
-  2) Me - Only commits authored by me.
-  3) Someone else - Pick one or more authors.
+> Everyone - All contributors.
+  Me - Only commits authored by me.
+  Someone else - Pick one or more authors.
 
 Output format:
-  1) Markdown - Paste-ready for Slack, Notion, or GitHub.
-  2) Plain text - Simple terminal summary.
-  3) JSON - Structured data for scripts or automation.
-  4) Changelog - Release-note Markdown grouped by conventional commit type.
+> Markdown - Paste-ready for Slack, Notion, or GitHub.
+  Plain text - Simple terminal summary.
+  JSON - Structured data for scripts or automation.
+  Changelog - Release-note Markdown grouped by conventional commit type.
 
-Polish with AI? [Y/n]
+Polish with AI?
+> Yes
+  No
 ```
 
 The wizard asks for a format, then whether to polish it with AI (skipped for
@@ -113,9 +118,8 @@ For remote repository reports, the wizard lists repositories from the GitHub CLI
 when `gh` is available. You can select more than one repository, and the report
 groups results by repository.
 
-When picking multiple authors or repositories in an interactive terminal, use
-Up/Down to move, Space to select, and Enter to confirm. Non-interactive shells
-fall back to comma-separated numbered choices.
+Non-interactive shells fall back to comma-separated numbered choices for
+multiple authors or repositories.
 
 Update to the latest GitHub version at any time:
 
