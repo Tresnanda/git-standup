@@ -13,6 +13,7 @@ Generate standup-ready summaries from Git history.
 - Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
 - Can run against another repository path with `--repo`.
 - Supports exact report windows with `--since` and `--until`.
+- Can hide merge commits with `--exclude-merges` for less noisy standups.
 - Writes summaries directly to files with `--output`.
 - Supports AI summaries through OpenAI-compatible chat-completion APIs.
 - Works without AI by using `--no-ai`.
@@ -141,6 +142,12 @@ Generate an exact reporting window:
 git-standup --since 2026-01-01 --until 2026-01-07 --markdown
 ```
 
+Hide merge commits for a cleaner activity summary:
+
+```bash
+git-standup --exclude-merges --markdown
+```
+
 Write output directly to a file:
 
 ```bash
@@ -249,8 +256,10 @@ Markdown mode preserves the local, no-AI workflow while producing output that is
 ```text
 usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
-                   [--base-branch BASE_BRANCH] [--json] [--no-ai]
-                   [--ai] [--markdown] [--output OUTPUT]
+                   [--base-branch BASE_BRANCH] [--max-commits MAX_COMMITS]
+                   [--max-files-per-commit MAX_FILES_PER_COMMIT]
+                   [--exclude-merges] [--json] [--no-ai] [--ai]
+                   [--markdown] [--output OUTPUT]
                    [--api-key API_KEY] [--provider PROVIDER]
                    [--harness HARNESS] [--model MODEL]
                    [--base-url BASE_URL] [--version] [--no-wizard]
@@ -265,6 +274,10 @@ options:
   --until DATE         End date for the report window, in YYYY-MM-DD format.
   --author AUTHOR      Filter by author. Use "me" for the current Git user.
   --base-branch NAME   Show commits in HEAD that are not in this base branch.
+  --max-commits N      Maximum commits to include in output and AI input.
+  --max-files-per-commit N
+                       Maximum changed files to include per commit.
+  --exclude-merges     Exclude merge commits from Git history.
   --json               Print structured JSON (always raw; AI is ignored).
   --no-ai              Skip AI and print a raw formatted summary.
   --ai                 Force AI mode (default for text/markdown; ignored with --json).
