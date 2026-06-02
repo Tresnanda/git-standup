@@ -1171,6 +1171,28 @@ def test_interactive_choice_uses_arrow_keys_to_select(
     assert "\x1b[4F\x1b[J" in out
 
 
+def test_interactive_choice_q_cancels_instead_of_selecting_default() -> None:
+    with pytest.raises(cli._WizardCancelled):
+        cli._interactive_choice(
+            "Repository source",
+            [
+                ("current", "Current directory", "Use this Git repository."),
+                ("remote", "Remote repository", "Pick one or more GitHub repositories."),
+            ],
+            "current",
+            key_reader=lambda: "q",
+        )
+
+
+def test_interactive_multi_select_q_cancels() -> None:
+    with pytest.raises(cli._WizardCancelled):
+        cli._interactive_multi_select(
+            "Choose remote repositories",
+            ["Tresnanda/git-standup"],
+            key_reader=lambda: "q",
+        )
+
+
 def test_interactive_confirm_uses_same_selector() -> None:
     keys = iter(["\x1b[B", "\r"])
 
@@ -1179,6 +1201,25 @@ def test_interactive_confirm_uses_same_selector() -> None:
         default=True,
         key_reader=lambda: next(keys),
     ) is False
+
+
+def test_run_wizard_q_cancels_before_generated_command(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    called: dict[str, object] = {}
+
+    def cancel_choice(*_args: object, **_kwargs: object) -> str:
+        raise cli._WizardCancelled
+
+    monkeypatch.setattr(cli, "_numbered_choice", cancel_choice)
+    monkeypatch.setattr(cli, "main", lambda _args: called.update(main=True) or 0)
+
+    assert cli.run_wizard() == 0
+    assert called == {}
+    out = capsys.readouterr().out
+    assert "Cancelled." in out
+    assert "Generated command" not in out
 
 
 def test_terminal_key_reader_reads_full_arrow_escape_sequence(
