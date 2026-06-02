@@ -589,7 +589,7 @@ def _read_terminal_key() -> str:
 
     old_settings = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
+        tty.setcbreak(fd)
         return _read_terminal_key_from_fd(fd)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -632,7 +632,7 @@ def _raw_terminal_session(enabled: bool):
     old_settings = termios.tcgetattr(fd)
     previous_fd = _RAW_TERMINAL_FD
     try:
-        tty.setraw(fd)
+        tty.setcbreak(fd)
         _RAW_TERMINAL_FD = fd
         yield
     finally:
