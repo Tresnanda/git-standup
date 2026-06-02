@@ -153,6 +153,7 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
             "2026-01-01",
             "--until",
             "2026-01-07",
+            "--exclude-merges",
             "--json",
         ]
     )
@@ -161,12 +162,19 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
     assert captured["repo_path"] == "/workspace/app"
     assert captured["since"] == "2026-01-01"
     assert captured["until"] == "2026-01-07"
+    assert captured["exclude_merges"] is True
 
 
 def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
+    default = cli.parse_args([])
+    assert default.exclude_merges is False
+
     me = cli.parse_args(["me"])
     assert me.author == "me"
     assert me.no_ai is True
+
+    no_merges = cli.parse_args(["--exclude-merges"])
+    assert no_merges.exclude_merges is True
 
     branch = cli.parse_args(["branch"])
     assert branch.base_branch == "main"
