@@ -13,6 +13,7 @@ Generate standup-ready summaries from Git history.
 - Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
 - Builds non-AI changelog Markdown for release notes with `--changelog`.
 - Can run against another repository path with `--repo`.
+- Can run against one or more GitHub repositories with repeatable `--remote-repo`.
 - Can focus reports on one or more paths with repeatable `--path` filters.
 - Supports exact report windows with `--since` and `--until`.
 - Can hide merge commits with `--exclude-merges` for less noisy standups.
@@ -77,11 +78,21 @@ git-standup wizard
 Example wizard choices:
 
 ```text
-Report type:
-  1) This week - Last 7 days for the whole repo.
-  2) My commits - Only commits authored by me.
-  3) Branch changes - Compare this branch against a base branch.
-  4) Custom range - Choose days, dates, or author filters.
+Repository source:
+  1) Current directory - Use this Git repository.
+  2) Other directory - Choose a local Git repository path.
+  3) Remote repository - Pick one or more GitHub repositories.
+
+Review changes from:
+  1) Today - Changes since today began.
+  2) This week - Last 7 days.
+  3) Custom range - Choose how many days to review.
+  4) Branch changes - Compare this branch against a base branch.
+
+By who:
+  1) Everyone - All contributors.
+  2) Me - Only commits authored by me.
+  3) Someone else - Pick one or more authors.
 
 Output format:
   1) Markdown - Paste-ready for Slack, Notion, or GitHub.
@@ -97,6 +108,14 @@ JSON and changelog). Markdown and Plain text can each be produced with or
 without AI. If no AI provider is detected, the wizard offers to set one up on
 the fly. When the report is printed instead of saved, press `c` to copy it to
 the clipboard.
+
+For remote repository reports, the wizard lists repositories from the GitHub CLI
+when `gh` is available. You can select more than one repository, and the report
+groups results by repository.
+
+When picking multiple authors or repositories in an interactive terminal, use
+Up/Down to move, Space to select, and Enter to confirm. Non-interactive shells
+fall back to comma-separated numbered choices.
 
 Update to the latest GitHub version at any time:
 
@@ -260,7 +279,15 @@ git-standup branch
 git-standup --days 14 --json --output standup.json
 ```
 
-The JSON output is grouped as `author -> date -> commits/stats`, making it easy to feed into dashboards, release notes, or another summarization step.
+The JSON output is grouped as `author -> date -> commits/stats`, making it easy to feed into dashboards, release notes, or another summarization step. Multi-repository output is grouped under `_repositories`.
+
+### Multi-Repository GitHub Report
+
+```bash
+git-standup --remote-repo Tresnanda/api --remote-repo Tresnanda/web --days 7 --markdown
+```
+
+Remote reports clone temporary copies for the run, then format the output with a repository heading for each selected project.
 
 ### Paste-Ready Markdown
 
@@ -282,6 +309,7 @@ Changelog mode is always non-AI. It groups conventional commits into Features, F
 
 ```text
 usage: git-standup [-h] [--days DAYS] [--repo REPO]
+                   [--remote-repo OWNER/NAME]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
                    [--base-branch BASE_BRANCH] [--max-commits MAX_COMMITS]
                    [--max-files-per-commit MAX_FILES_PER_COMMIT]
@@ -297,6 +325,9 @@ options:
                        branch, update; or a repository path.
   --days DAYS          Number of days of Git history to include. Must be positive.
   --repo PATH          Path to the Git repository to analyze.
+  --remote-repo OWNER/NAME
+                       GitHub repository to clone and include in the report.
+                       Repeat for multiple repos.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.
   --until DATE         End date for the report window, in YYYY-MM-DD format.
   --author AUTHOR      Filter by author. Use "me" for the current Git user.

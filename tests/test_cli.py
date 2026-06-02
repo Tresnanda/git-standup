@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from git_standup import cli
+from git_standup.formatter import build_markdown_output
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +42,23 @@ def _sample_commits() -> list[dict[str, object]]:
             "files": [{"path": "src/auth.py", "insertions": 12, "deletions": 2}],
         }
     ]
+
+
+def _sample_commit_data(subject: str) -> dict[str, object]:
+    commits = _sample_commits()
+    commits[0]["subject"] = subject
+    return cli._build_commit_data(commits)
+
+
+class _TempDir:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def __enter__(self) -> str:
+        return str(self.path)
+
+    def __exit__(self, *_args: object) -> None:
+        return None
 
 
 def test_json_mode_prints_structured_commit_data(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -142,6 +160,49 @@ def test_json_mode_includes_pathspec_metadata(
     assert output["_metadata"] == {"pathspecs": ["src", "tests"]}
 
 
+def test_json_mode_groups_multiple_remote_repositories(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    tmp_path,
+) -> None:
+    cloned: list[tuple[str, str]] = []
+
+    def fake_clone(remote: str, parent: Path) -> Path:
+        path = parent / remote.replace("/", "__")
+        cloned.append((remote, str(path)))
+        return path
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        commits = _sample_commits()
+        commits[0]["subject"] = f"Report {Path(str(kwargs['repo_path'])).name}"
+        return commits
+
+    monkeypatch.setattr(cli, "_clone_remote_repo", fake_clone)
+    monkeypatch.setattr(cli.tempfile, "TemporaryDirectory", lambda: _TempDir(tmp_path))
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-repo",
+            "Tresnanda/web",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert cloned == [
+        ("Tresnanda/api", str(tmp_path / "Tresnanda__api")),
+        ("Tresnanda/web", str(tmp_path / "Tresnanda__web")),
+    ]
+    output = json.loads(capsys.readouterr().out)
+    assert set(output["_repositories"]) == {"Tresnanda/api", "Tresnanda/web"}
+    assert output["_repositories"]["Tresnanda/api"]["Alice"]["2026-03-10"]["commits"][0][
+        "subject"
+    ] == "Report Tresnanda__api"
+
+
 def test_markdown_mode_prints_paste_ready_summary(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -155,6 +216,24 @@ def test_markdown_mode_prints_paste_ready_summary(
     assert "# Standup Summary" in output
     assert "## Alice" in output
     assert "- `abc123` Add authentication" in output
+
+
+def test_markdown_mode_formats_multiple_repositories() -> None:
+    output = build_markdown_output(
+        {
+            "_repositories": {
+                "Tresnanda/api": _sample_commit_data("Add API"),
+                "Tresnanda/web": _sample_commit_data("Add web UI"),
+            }
+        }
+    )
+
+    assert "## Tresnanda/api" in output
+    assert "### Alice" in output
+    assert "#### 2026-03-10" in output
+    assert "- `abc123` Add API" in output
+    assert "## Tresnanda/web" in output
+    assert "- `abc123` Add web UI" in output
 
 
 def test_changelog_mode_prints_release_note_markdown_without_ai(
@@ -717,6 +796,28 @@ def test_build_wizard_args_markdown_without_ai_adds_no_ai() -> None:
     assert args == ["--days", "7", "--markdown", "--no-ai"]
 
 
+def test_build_wizard_args_accepts_multiple_remote_repositories() -> None:
+    args = cli.build_wizard_args(
+        {
+            "remote_repos": ["Tresnanda/api", "Tresnanda/web"],
+            "preset": "week",
+            "format": "markdown",
+            "ai": False,
+        }
+    )
+
+    assert args == [
+        "--remote-repo",
+        "Tresnanda/api",
+        "--remote-repo",
+        "Tresnanda/web",
+        "--days",
+        "7",
+        "--markdown",
+        "--no-ai",
+    ]
+
+
 def test_build_wizard_args_text_with_ai_is_the_default_report() -> None:
     args = cli.build_wizard_args(
         {"repo": ".", "preset": "week", "author": "me", "format": "text", "ai": True}
@@ -818,7 +919,7 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    answers = iter([".", "4", "1", "main", "1"])
+    answers = iter(["1", "4", "1", "main", "1"])
     captured: dict[str, object] = {}
 
     def fake_ask(*_args: object, **_kwargs: object) -> str:
@@ -848,12 +949,44 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
     assert "Markdown - Paste-ready for Slack, Notion, or GitHub." in out
 
 
+def test_run_wizard_starts_with_repository_source_and_remote_multi_select(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answers = iter(["3", "1,2", "2", "1", "1"])
+    # Polish with AI? -> yes, Save? -> no, Run it now -> no
+    confirms = iter([True, False, False])
+
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
+    monkeypatch.setattr(
+        cli,
+        "_remote_repositories",
+        lambda: ["Tresnanda/api", "Tresnanda/web", "Tresnanda/docs"],
+    )
+
+    assert cli.run_wizard() == 0
+
+    out = capsys.readouterr().out
+    assert "Repository source:" in out
+    assert "Current directory - Use this Git repository." in out
+    assert "Remote repository - Pick one or more GitHub repositories." in out
+    assert "Choose remote repositories:" in out
+    assert "1) Tresnanda/api" in out
+    assert "2) Tresnanda/web" in out
+    assert (
+        "Generated command:\n  git-standup --remote-repo Tresnanda/api "
+        "--remote-repo Tresnanda/web --days 7 --markdown"
+    ) in out
+
+
 def test_run_wizard_asks_timeframe_then_author_then_format(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     prompts: list[tuple[str, dict[str, object]]] = []
-    answers = iter([".", "2", "2", "2"])
+    answers = iter(["1", "2", "2", "2"])
     # Polish with AI? -> yes, Save? -> no, Run it now -> no
     confirms = iter([True, False, False])
 
@@ -889,7 +1022,7 @@ def test_run_wizard_guides_file_saving(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     prompts: list[tuple[str, dict[str, object]]] = []
-    answers = iter([".", "2", "2", "2", "standup.txt"])
+    answers = iter(["1", "2", "2", "2", "standup.txt"])
     # Polish with AI? -> yes, Save? -> yes, Run it now -> no
     confirms = iter([True, True, False])
 
@@ -915,7 +1048,7 @@ def test_run_wizard_uses_multi_author_picker_for_someone_else(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    answers = iter([".", "2", "3", "1,3", "2"])
+    answers = iter(["1", "2", "3", "1,3", "2"])
     # Polish with AI? -> yes, Save? -> no, Run it now -> yes
     confirms = iter([True, False, True])
     captured: dict[str, object] = {}
@@ -938,6 +1071,23 @@ def test_run_wizard_uses_multi_author_picker_for_someone_else(
     assert "1) Alice" in out
     assert "3) Casey" in out
     assert "Generated command:\n  git-standup --days 7 --author 'Alice|Casey'" in out
+
+
+def test_multi_select_uses_arrow_keys_and_space_to_select(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter([" ", "\x1b[B", " ", "\r"])
+
+    selected = cli._interactive_multi_select(
+        "Choose authors",
+        ["Kevin", "YusufRehan", "Treshnanda"],
+        key_reader=lambda: next(keys),
+    )
+
+    assert selected == ["Kevin", "YusufRehan"]
+    out = capsys.readouterr().out
+    assert "Choose authors" in out
+    assert "Space selects" in out
 
 
 def test_main_opens_wizard_for_bare_interactive_command(

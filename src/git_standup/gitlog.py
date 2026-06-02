@@ -50,6 +50,31 @@ def get_commits(
         hash, author_name, author_email, date, message, files, insertions, deletions.
     """
     repo_root = get_repo_root(repo_path)
+    if author and "|" in author:
+        commits_by_hash: dict[str, dict[str, Any]] = {}
+        for author_part in (part.strip() for part in author.split("|")):
+            if not author_part:
+                continue
+            for commit in get_commits(
+                days=days,
+                author=author_part,
+                base_branch=base_branch,
+                repo_path=repo_root,
+                since=since,
+                until=until,
+                max_commits=max_commits,
+                exclude_merges=exclude_merges,
+                pathspecs=pathspecs,
+            ):
+                commit_hash = str(commit.get("hash", ""))
+                if commit_hash:
+                    commits_by_hash[commit_hash] = commit
+        return sorted(
+            commits_by_hash.values(),
+            key=lambda commit: str(commit.get("date", "")),
+            reverse=True,
+        )
+
     since_arg = since or (datetime.now(timezone.utc) - timedelta(days=days)).strftime(
         "%Y-%m-%dT%H:%M:%S"
     )
