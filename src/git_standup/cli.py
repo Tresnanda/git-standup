@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,7 @@ REPO_URL = "https://github.com/Tresnanda/git-standup.git"
 REPO_SPEC = f"git+{REPO_URL}"
 MIN_PYTHON = (3, 10)
 REPOSITORIES_KEY = "_repositories"
+_RAW_TERMINAL_FD: int | None = None
 
 
 @dataclass
@@ -578,24 +580,81 @@ def _read_terminal_key() -> str:
         return read_single_key()
 
     fd = sys.stdin.fileno()
+    if _RAW_TERMINAL_FD == fd:
+        return _read_terminal_key_from_fd(fd)
+
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        key = os.read(fd, 1).decode(errors="ignore")
-        if key == "\x1b":
-            while True:
-                ready, _, _ = select.select([fd], [], [], 0.05)
+        return _read_terminal_key_from_fd(fd)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def _read_terminal_key_from_fd(fd: int) -> str:
+    key = os.read(fd, 1).decode(errors="ignore")
+    if key == "\x1b":
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if not ready:
+            return key
+        key += os.read(fd, 1).decode(errors="ignore")
+        if key[-1:] in {"[", "O"}:
+            for _ in range(8):
+                ready, _, _ = select.select([fd], [], [], 0.01)
                 if not ready:
                     break
-                key += os.read(fd, 1).decode(errors="ignore")
-        return key
+                next_char = os.read(fd, 1).decode(errors="ignore")
+                key += next_char
+                if next_char.isalpha() or next_char == "~":
+                    break
+    return key
+
+
+@contextmanager
+def _raw_terminal_session(enabled: bool):
+    global _RAW_TERMINAL_FD
+    if not enabled or not sys.stdin.isatty() or sys.platform.startswith("win"):
+        yield
+        return
+
+    try:
+        import termios
+        import tty
+    except ImportError:
+        yield
+        return
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    previous_fd = _RAW_TERMINAL_FD
+    try:
+        tty.setraw(fd)
+        _RAW_TERMINAL_FD = fd
+        yield
     finally:
+        _RAW_TERMINAL_FD = previous_fd
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 def _move_cursor_up(lines: int) -> None:
     if lines > 0:
         print(f"\x1b[{lines}F\x1b[J", end="")
+
+
+def _terminal_lines() -> int:
+    return shutil.get_terminal_size((80, 24)).lines
+
+
+def _picker_window(cursor: int, option_count: int) -> tuple[int, int, bool]:
+    page_size = max(5, min(option_count, _terminal_lines() - 4))
+    if option_count <= page_size:
+        return 0, option_count, False
+
+    start = min(
+        max(0, cursor - page_size // 2),
+        option_count - page_size,
+    )
+    return start, start + page_size, True
 
 
 def _interactive_choice(
@@ -617,25 +676,32 @@ def _interactive_choice(
     def render() -> None:
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
+        start, end, paged = _picker_window(cursor, len(options))
         print(f"{title}:")
         print("Use Up/Down to move, Enter to choose, q to cancel.")
-        for index, (_value, label, description) in enumerate(options):
+        for index in range(start, end):
+            _value, label, description = options[index]
             pointer = ">" if index == cursor else " "
             suffix = f" - {description}" if description else ""
             print(f"{pointer} {label}{suffix}")
-        rendered_lines = len(options) + 2
+        footer_lines = 0
+        if paged:
+            print(f"Showing {start + 1}-{end} of {len(options)}.")
+            footer_lines = 1
+        rendered_lines = (end - start) + 2 + footer_lines
 
-    while True:
-        render()
-        key = key_reader()
-        if key in {"\r", "\n"}:
-            return options[cursor][0]
-        if key.lower() == "q":
-            return default
-        if key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
-            cursor = (cursor + 1) % len(options)
-        elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
-            cursor = (cursor - 1) % len(options)
+    with _raw_terminal_session(key_reader is _read_terminal_key):
+        while True:
+            render()
+            key = key_reader()
+            if key in {"\r", "\n"}:
+                return options[cursor][0]
+            if key.lower() == "q":
+                return default
+            if key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
+                cursor = (cursor + 1) % len(options)
+            elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
+                cursor = (cursor - 1) % len(options)
 
 
 def _interactive_confirm(
@@ -680,32 +746,39 @@ def _interactive_multi_select(
     def render() -> None:
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
+        start, end, paged = _picker_window(cursor, len(options))
         print(f"{title}:")
         print("Use Up/Down to move, Space selects, Enter confirms, a selects all, q cancels.")
-        for index, option in enumerate(options):
+        for index in range(start, end):
+            option = options[index]
             pointer = ">" if index == cursor else " "
             mark = "[x]" if index in selected else "[ ]"
             print(f"{pointer} {mark} {option}")
-        rendered_lines = len(options) + 2
+        footer_lines = 0
+        if paged:
+            print(f"Showing {start + 1}-{end} of {len(options)}. Selected: {len(selected)}.")
+            footer_lines = 1
+        rendered_lines = (end - start) + 2 + footer_lines
 
-    while True:
-        render()
-        key = key_reader()
-        if key in {"\r", "\n"}:
-            return [option for index, option in enumerate(options) if index in selected]
-        if key.lower() == "q":
-            return []
-        if key.lower() == "a":
-            selected = set(range(len(options)))
-        elif key in {" ", "\t"}:
-            if cursor in selected:
-                selected.remove(cursor)
-            else:
-                selected.add(cursor)
-        elif key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
-            cursor = (cursor + 1) % len(options)
-        elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
-            cursor = (cursor - 1) % len(options)
+    with _raw_terminal_session(key_reader is _read_terminal_key):
+        while True:
+            render()
+            key = key_reader()
+            if key in {"\r", "\n"}:
+                return [option for index, option in enumerate(options) if index in selected]
+            if key.lower() == "q":
+                return []
+            if key.lower() == "a":
+                selected = set(range(len(options)))
+            elif key in {" ", "\t"}:
+                if cursor in selected:
+                    selected.remove(cursor)
+                else:
+                    selected.add(cursor)
+            elif key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
+                cursor = (cursor + 1) % len(options)
+            elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
+                cursor = (cursor - 1) % len(options)
 
 
 def _recent_authors(repo: str) -> list[str]:

@@ -116,7 +116,9 @@ the clipboard.
 
 For remote repository reports, the wizard lists repositories from the GitHub CLI
 when `gh` is available. You can select more than one repository, and the report
-groups results by repository.
+groups results by repository. Long author or repository lists are shown in a
+small viewport, so Up/Down moves through the list without flooding the terminal
+scrollback.
 
 Non-interactive shells fall back to comma-separated numbered choices for
 multiple authors or repositories.
