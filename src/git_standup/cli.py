@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -324,7 +325,9 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
         args.extend(["--repo", repo])
 
     preset = str(answers.get("preset") or "week")
-    if preset == "me":
+    if preset == "today":
+        args.extend(["--since", str(answers.get("since") or _today_string())])
+    elif preset == "me":
         args.extend(["--author", "me"])
     elif preset == "me_week":
         args.extend(["--days", "7", "--author", "me"])
@@ -341,10 +344,12 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
             args.extend(["--days", str(days)])
         if until:
             args.extend(["--until", str(until)])
-        if author:
-            args.extend(["--author", str(author)])
     else:
         args.extend(["--days", "7"])
+
+    author = answers.get("author")
+    if author and preset not in {"me", "me_week"}:
+        args.extend(["--author", str(author)])
 
     output_format = str(answers.get("format") or "text")
     if output_format == "markdown":
@@ -358,6 +363,10 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     if output:
         args.extend(["--output", str(output)])
     return args
+
+
+def _today_string() -> str:
+    return date.today().isoformat()
 
 
 def _default_output_path(output_format: str) -> str:
@@ -483,47 +492,60 @@ def run_wizard() -> int:
     """Interactive command builder for git-standup."""
     repo = Prompt.ask("Repository path", default=".")
     preset = _numbered_choice(
-        "Report type",
+        "Review changes from",
         [
-            ("week", "This week", "Last 7 days for the whole repo."),
-            ("me_week", "My last 7 days", "Last 7 days authored by me."),
+            ("today", "Today", "Changes since today began."),
+            ("week", "This week", "Last 7 days."),
+            ("custom", "Custom range", "Choose how many days to review."),
             ("branch", "Branch changes", "Compare this branch against a base branch."),
-            ("custom", "Custom range", "Choose days, dates, or author filters."),
         ],
         "week",
+    )
+    author_choice = _numbered_choice(
+        "By who",
+        [
+            ("all", "Everyone", "All contributors."),
+            ("me", "Me", "Only commits authored by me."),
+            ("custom", "Someone else", "Type an author name or email."),
+        ],
+        "all",
     )
     ai_report = detect_ai_environment(os.environ)
     answers: dict[str, object] = {
         "repo": repo,
         "preset": preset,
-        "format": _numbered_choice(
-            "Output style",
-            [
-                (
-                    "ai",
-                    "AI summary",
-                    "Use your configured AI provider or CLI for a polished draft.",
-                ),
-                (
-                    "markdown",
-                    "Markdown",
-                    "Paste-ready Markdown for Slack, Notion, GitHub, or a file.",
-                ),
-                ("text", "Plain text", "Simple terminal summary without AI."),
-                ("json", "JSON", "Structured data for scripts, dashboards, or automation."),
-            ],
-            "ai",
-        ),
     }
+    if author_choice == "me":
+        answers["author"] = "me"
+    elif author_choice == "custom":
+        author = Prompt.ask("Author name or email", default="")
+        if author:
+            answers["author"] = author
     if ai_report["cli_harnesses"]:
         print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))
     if preset == "branch":
         answers["base_branch"] = Prompt.ask("Base branch", default="main")
     elif preset == "custom":
         answers["days"] = Prompt.ask("Days of history", default="7")
-        author = Prompt.ask("Author filter (blank for all, 'me' for you)", default="")
-        if author:
-            answers["author"] = author
+
+    answers["format"] = _numbered_choice(
+        "Output style",
+        [
+            (
+                "ai",
+                "AI summary",
+                "Use your configured AI provider or CLI for a polished draft.",
+            ),
+            (
+                "markdown",
+                "Markdown",
+                "Paste-ready Markdown for Slack, Notion, GitHub, or a file.",
+            ),
+            ("text", "Plain text", "Simple terminal summary without AI."),
+            ("json", "JSON", "Structured data for scripts, dashboards, or automation."),
+        ],
+        "ai",
+    )
 
     if Confirm.ask("Save report to a file?", default=False):
         output_format = str(answers["format"])

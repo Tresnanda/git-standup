@@ -498,16 +498,30 @@ def test_build_wizard_args_for_branch_markdown_report() -> None:
     ]
 
 
-def test_build_wizard_args_for_my_last_seven_days_ai_report() -> None:
+def test_build_wizard_args_for_this_week_by_me_ai_report() -> None:
     args = cli.build_wizard_args(
         {
             "repo": ".",
-            "preset": "me_week",
+            "preset": "week",
+            "author": "me",
             "format": "ai",
         }
     )
 
     assert args == ["--days", "7", "--author", "me"]
+
+
+def test_build_wizard_args_for_today_everyone_ai_report() -> None:
+    args = cli.build_wizard_args(
+        {
+            "repo": ".",
+            "preset": "today",
+            "since": "2026-06-02",
+            "format": "ai",
+        }
+    )
+
+    assert args == ["--since", "2026-06-02"]
 
 
 def test_default_output_path_matches_output_style() -> None:
@@ -543,7 +557,7 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    answers = iter([".", "3", "2", "main"])
+    answers = iter([".", "4", "1", "main", "2"])
     captured: dict[str, object] = {}
 
     def fake_ask(*_args: object, **_kwargs: object) -> str:
@@ -564,18 +578,52 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
 
     assert captured["args"] == ["--base-branch", "main", "--markdown"]
     out = capsys.readouterr().out
-    assert "Report type:" in out
+    assert "Review changes from:" in out
     assert "Branch changes - Compare this branch against a base branch." in out
+    assert "By who:" in out
+    assert "Everyone - All contributors." in out
     assert "Output style:" in out
     assert "Markdown - Paste-ready Markdown for Slack, Notion, GitHub, or a file." in out
 
 
-def test_run_wizard_defaults_to_ai_and_guides_file_saving(
+def test_run_wizard_asks_timeframe_then_author_and_defaults_to_ai(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     prompts: list[tuple[str, dict[str, object]]] = []
-    answers = iter([".", "2", "1", "standup.txt"])
+    answers = iter([".", "2", "2", "1"])
+    confirms = iter([False, False])
+
+    def fake_ask(message: str, **kwargs: object) -> str:
+        prompts.append((message, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+
+    assert cli.run_wizard() == 0
+
+    assert prompts[1] == (
+        "Review changes from choice",
+        {"choices": ["1", "2", "3", "4"], "default": "2"},
+    )
+    assert prompts[2] == ("By who choice", {"choices": ["1", "2", "3"], "default": "1"})
+    assert prompts[3] == ("Output style choice", {"choices": ["1", "2", "3", "4"], "default": "1"})
+    out = capsys.readouterr().out
+    assert "Review changes from:" in out
+    assert "This week - Last 7 days." in out
+    assert "By who:" in out
+    assert "Me - Only commits authored by me." in out
+    assert "Generated command:\n  git-standup --days 7 --author me" in out
+
+
+def test_run_wizard_guides_file_saving(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prompts: list[tuple[str, dict[str, object]]] = []
+    answers = iter([".", "2", "2", "1", "standup.txt"])
     confirms = iter([True, False])
 
     def fake_ask(message: str, **kwargs: object) -> str:
@@ -588,10 +636,10 @@ def test_run_wizard_defaults_to_ai_and_guides_file_saving(
 
     assert cli.run_wizard() == 0
 
-    assert prompts[2] == ("Output style choice", {"choices": ["1", "2", "3", "4"], "default": "1"})
-    assert prompts[3] == ("Save as", {"default": "standup.txt"})
+    assert prompts[4] == ("Save as", {"default": "standup.txt"})
     out = capsys.readouterr().out
-    assert "My last 7 days - Last 7 days authored by me." in out
+    assert "This week - Last 7 days." in out
+    assert "Me - Only commits authored by me." in out
     assert "AI summary - Use your configured AI provider or CLI for a polished draft." in out
     assert "Generated command:\n  git-standup --days 7 --author me --output standup.txt" in out
 
