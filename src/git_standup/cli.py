@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
+from rich.markdown import Markdown
 from rich.prompt import Confirm, Prompt
 
 from git_standup import __version__
@@ -202,6 +204,19 @@ def _emit(content: str, output_path: str | None, printer) -> None:
         return
     printer()
     _maybe_offer_copy(content)
+
+
+def _print_markdown(content: str) -> None:
+    """Render Markdown for interactive terminals; keep raw Markdown for pipes."""
+    if sys.stdout.isatty():
+        Console().print(Markdown(content))
+    else:
+        print(content, end="")
+
+
+def _emit_markdown(content: str, output_path: str | None) -> None:
+    """Emit Markdown as rendered terminal output while preserving raw copy/file text."""
+    _emit(content, output_path, lambda: _print_markdown(content))
 
 
 def _pipx_binary() -> str | None:
@@ -1107,7 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         changelog = build_changelog_output(commits, budget_metadata)
-        _emit(changelog, args.output, lambda: print(changelog, end=""))
+        _emit_markdown(changelog, args.output)
         return 0
 
     commit_data = _build_commit_data(commits)
@@ -1130,7 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
         """Emit the raw (non-AI) formatter output for the chosen format."""
         if output_format == "markdown":
             markdown = build_markdown_output(commit_data)
-            _emit(markdown, args.output, lambda: print(markdown, end=""))
+            _emit_markdown(markdown, args.output)
         else:
             _emit(
                 build_text_output(commit_data),
@@ -1183,7 +1198,11 @@ def main(argv: list[str] | None = None) -> int:
         _emit_raw()
         return 1
 
-    _emit(standup_text.rstrip() + "\n", args.output, lambda: print_ai_standup(standup_text))
+    output = standup_text.rstrip() + "\n"
+    if output_format == "markdown":
+        _emit_markdown(output, args.output)
+    else:
+        _emit(output, args.output, lambda: print_ai_standup(standup_text))
     return 0
 
 
