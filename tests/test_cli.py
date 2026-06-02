@@ -498,6 +498,25 @@ def test_build_wizard_args_for_branch_markdown_report() -> None:
     ]
 
 
+def test_build_wizard_args_for_my_last_seven_days_ai_report() -> None:
+    args = cli.build_wizard_args(
+        {
+            "repo": ".",
+            "preset": "me_week",
+            "format": "ai",
+        }
+    )
+
+    assert args == ["--days", "7", "--author", "me"]
+
+
+def test_default_output_path_matches_output_style() -> None:
+    assert cli._default_output_path("ai") == "standup.txt"
+    assert cli._default_output_path("text") == "standup.txt"
+    assert cli._default_output_path("markdown") == "standup.md"
+    assert cli._default_output_path("json") == "standup.json"
+
+
 def test_numbered_choice_shows_plain_language_options(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -524,18 +543,20 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    answers = iter([".", "3", "2", "main", ""])
+    answers = iter([".", "3", "2", "main"])
     captured: dict[str, object] = {}
 
     def fake_ask(*_args: object, **_kwargs: object) -> str:
         return next(answers)
+
+    confirms = iter([False, True])
 
     def fake_main(args: list[str]) -> int:
         captured["args"] = args
         return 0
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
-    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
     monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
     monkeypatch.setattr(cli, "main", fake_main)
 
@@ -547,6 +568,32 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
     assert "Branch changes - Compare this branch against a base branch." in out
     assert "Output style:" in out
     assert "Markdown - Paste-ready Markdown for Slack, Notion, GitHub, or a file." in out
+
+
+def test_run_wizard_defaults_to_ai_and_guides_file_saving(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    prompts: list[tuple[str, dict[str, object]]] = []
+    answers = iter([".", "2", "1", "standup.txt"])
+    confirms = iter([True, False])
+
+    def fake_ask(message: str, **kwargs: object) -> str:
+        prompts.append((message, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+
+    assert cli.run_wizard() == 0
+
+    assert prompts[2] == ("Output style choice", {"choices": ["1", "2", "3", "4"], "default": "1"})
+    assert prompts[3] == ("Save as", {"default": "standup.txt"})
+    out = capsys.readouterr().out
+    assert "My last 7 days - Last 7 days authored by me." in out
+    assert "AI summary - Use your configured AI provider or CLI for a polished draft." in out
+    assert "Generated command:\n  git-standup --days 7 --author me --output standup.txt" in out
 
 
 def test_main_opens_wizard_for_bare_interactive_command(

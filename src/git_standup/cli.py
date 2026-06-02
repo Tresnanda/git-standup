@@ -326,6 +326,8 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     preset = str(answers.get("preset") or "week")
     if preset == "me":
         args.extend(["--author", "me"])
+    elif preset == "me_week":
+        args.extend(["--days", "7", "--author", "me"])
     elif preset == "branch":
         args.extend(["--base-branch", str(answers.get("base_branch") or "main")])
     elif preset == "custom":
@@ -356,6 +358,14 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     if output:
         args.extend(["--output", str(output)])
     return args
+
+
+def _default_output_path(output_format: str) -> str:
+    if output_format == "markdown":
+        return "standup.md"
+    if output_format == "json":
+        return "standup.json"
+    return "standup.txt"
 
 
 def _choice(message: str, choices: list[str], default: str) -> str:
@@ -476,7 +486,7 @@ def run_wizard() -> int:
         "Report type",
         [
             ("week", "This week", "Last 7 days for the whole repo."),
-            ("me", "My commits", "Only commits authored by me."),
+            ("me_week", "My last 7 days", "Last 7 days authored by me."),
             ("branch", "Branch changes", "Compare this branch against a base branch."),
             ("custom", "Custom range", "Choose days, dates, or author filters."),
         ],
@@ -489,20 +499,20 @@ def run_wizard() -> int:
         "format": _numbered_choice(
             "Output style",
             [
-                ("text", "Plain text", "Simple terminal summary without AI."),
-                (
-                    "markdown",
-                    "Markdown",
-                    "Paste-ready Markdown for Slack, Notion, GitHub, or a file.",
-                ),
-                ("json", "JSON", "Structured data for scripts, dashboards, or automation."),
                 (
                     "ai",
                     "AI summary",
                     "Use your configured AI provider or CLI for a polished draft.",
                 ),
+                (
+                    "markdown",
+                    "Markdown",
+                    "Paste-ready Markdown for Slack, Notion, GitHub, or a file.",
+                ),
+                ("text", "Plain text", "Simple terminal summary without AI."),
+                ("json", "JSON", "Structured data for scripts, dashboards, or automation."),
             ],
-            "text",
+            "ai",
         ),
     }
     if ai_report["cli_harnesses"]:
@@ -515,9 +525,9 @@ def run_wizard() -> int:
         if author:
             answers["author"] = author
 
-    output = Prompt.ask("Output file (blank for stdout)", default="")
-    if output:
-        answers["output"] = output
+    if Confirm.ask("Save report to a file?", default=False):
+        output_format = str(answers["format"])
+        answers["output"] = Prompt.ask("Save as", default=_default_output_path(output_format))
 
     args = build_wizard_args(answers)
     print(f"\nGenerated command:\n  {_format_command(args)}\n")
