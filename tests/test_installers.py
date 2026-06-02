@@ -17,7 +17,12 @@ def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert 'pipx-bootstrap' in text
     assert ' -m venv "$venv_dir"' in text
     assert 'pip install --upgrade pip pipx' in text
-    assert 'install --python "$PYTHON" --force "$REPO_SPEC"' in text
+    assert 'pipx_path="$(command -v pipx)"' in text
+    assert '"$pipx_path" --version' in text
+    assert "Ignoring broken pipx" in text
+    assert "install_or_update_app()" in text
+    assert 'reinstall "$APP_NAME" --python "$PYTHON"' in text
+    assert 'install --python "$PYTHON" "$REPO_SPEC"' in text
     assert "Choose AI default:" in text
     assert "1) Codex CLI" in text
     assert "2) OpenAI API" in text
@@ -51,7 +56,11 @@ def test_windows_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert "pipx-bootstrap" in text
     assert '"-m", "venv", $venvDir' in text
     assert '"install", "--upgrade", "pip", "pipx"' in text
-    assert '"--python", $Python, "--force", $RepoSpec' in text
+    assert "$pipxExecutable = Get-Command pipx" in text
+    assert "Ignoring broken pipx" in text
+    assert "Install-OrUpdateApp" in text
+    assert '"reinstall", $AppName, "--python", $Python' in text
+    assert '"install", "--python", $Python, $RepoSpec' in text
     assert "Choose AI default:" in text
     assert "1) Codex CLI" in text
     assert "2) OpenAI API" in text

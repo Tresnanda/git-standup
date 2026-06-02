@@ -144,14 +144,39 @@ def _host_python() -> str | None:
     return None
 
 
+def _python_pipx_available(python: str) -> bool:
+    completed = subprocess.run(
+        [python, "-m", "pipx", "--version"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return completed.returncode == 0
+
+
+def _pipx_binary_available(pipx: str) -> bool:
+    try:
+        completed = subprocess.run(
+            [pipx, "--version"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
 def _pipx_update_command() -> list[str]:
     python = _host_python()
     if not python:
         return []
     pipx = _pipx_binary()
-    if pipx:
-        return [pipx, "install", "--python", python, "--force", REPO_SPEC]
-    return [python, "-m", "pipx", "install", "--python", python, "--force", REPO_SPEC]
+    if pipx and _pipx_binary_available(pipx):
+        return [pipx, "reinstall", DIST_NAME, "--python", python]
+    if _python_pipx_available(python):
+        return [python, "-m", "pipx", "reinstall", DIST_NAME, "--python", python]
+    return []
 
 
 def _data_home() -> Path:
@@ -183,8 +208,15 @@ def _bootstrap_pipx(python: str) -> str:
     subprocess.run(
         [str(venv_python), "-m", "pip", "install", "--upgrade", "pip", "pipx"],
         check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     return str(pipx)
+
+
+def _reinstall_with_bootstrapped_pipx(python: str) -> None:
+    pipx = _bootstrap_pipx(python)
+    subprocess.run([pipx, "reinstall", DIST_NAME, "--python", python], check=True)
 
 
 def run_update() -> int:
@@ -192,22 +224,35 @@ def run_update() -> int:
     print(f"Updating {APP_NAME} from GitHub...")
     command = _pipx_update_command()
     if not command:
-        print("Update failed: could not find a usable Python or pipx.", file=sys.stderr)
-        return 1
+        python = _host_python()
+        if not python:
+            print("Update failed: could not find a usable Python or pipx.", file=sys.stderr)
+            return 1
+        try:
+            _reinstall_with_bootstrapped_pipx(python)
+        except subprocess.CalledProcessError as exc:
+            print(f"Update failed with exit code {exc.returncode}.", file=sys.stderr)
+            return exc.returncode or 1
+        print(f"{APP_NAME} updated. Run `{APP_NAME}` again to use the latest version.")
+        return 0
     try:
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as exc:
-        if len(command) >= 3 and command[1:3] == ["-m", "pipx"]:
+        python = (
+            command[0]
+            if len(command) >= 3 and command[1:3] == ["-m", "pipx"]
+            else _host_python()
+        )
+        if python:
             try:
-                pipx = _bootstrap_pipx(command[0])
-                retry_command = [pipx, "install", "--python", command[0], "--force", REPO_SPEC]
-                subprocess.run(retry_command, check=True)
+                _reinstall_with_bootstrapped_pipx(python)
             except subprocess.CalledProcessError as retry_exc:
                 print(f"Update failed with exit code {retry_exc.returncode}.", file=sys.stderr)
                 return retry_exc.returncode or 1
-        else:
-            print(f"Update failed with exit code {exc.returncode}.", file=sys.stderr)
-            return exc.returncode or 1
+            print(f"{APP_NAME} updated. Run `{APP_NAME}` again to use the latest version.")
+            return 0
+        print(f"Update failed with exit code {exc.returncode}.", file=sys.stderr)
+        return exc.returncode or 1
     print(f"{APP_NAME} updated. Run `{APP_NAME}` again to use the latest version.")
     return 0
 

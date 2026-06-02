@@ -191,12 +191,16 @@ def test_parse_args_accepts_update_command() -> None:
     assert args.command == "update"
 
 
-def test_update_command_runs_pipx_install(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_update_command_runs_pipx_reinstall(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/local/bin/pipx")
     monkeypatch.setattr(cli, "_host_python", lambda: "/usr/local/bin/python3.11")
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0)
 
@@ -204,15 +208,103 @@ def test_update_command_runs_pipx_install(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert cli.main(["update"]) == 0
     assert calls == [
+        ["/usr/local/bin/pipx", "--version"],
         [
             "/usr/local/bin/pipx",
-            "install",
+            "reinstall",
+            "git-standup",
             "--python",
             "/usr/local/bin/python3.11",
-            "--force",
-            "git+https://github.com/Tresnanda/git-standup.git",
         ]
     ]
+
+
+def test_update_command_bootstraps_when_pipx_binary_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    bootstrap_dir = Path("/tmp/git-standup-pipx-bootstrap")
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        broken_reinstall = [
+            "/broken/pipx",
+            "reinstall",
+            "git-standup",
+            "--python",
+            "/usr/local/bin/python3.11",
+        ]
+        if cmd == broken_reinstall:
+            raise subprocess.CalledProcessError(1, cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli, "_host_python", lambda: "/usr/local/bin/python3.11")
+    monkeypatch.setattr(cli, "_pipx_binary", lambda: "/broken/pipx")
+    monkeypatch.setattr(cli, "_pipx_bootstrap_dir", lambda: bootstrap_dir)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.main(["update"]) == 0
+    assert calls == [
+        ["/broken/pipx", "--version"],
+        [
+            "/broken/pipx",
+            "reinstall",
+            "git-standup",
+            "--python",
+            "/usr/local/bin/python3.11",
+        ],
+        ["/usr/local/bin/python3.11", "-m", "venv", str(bootstrap_dir)],
+        [
+            str(bootstrap_dir / "bin" / "python"),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "pip",
+            "pipx",
+        ],
+        [
+            str(bootstrap_dir / "bin" / "pipx"),
+            "reinstall",
+            "git-standup",
+            "--python",
+            "/usr/local/bin/python3.11",
+        ],
+    ]
+
+
+def test_update_command_silently_skips_broken_pipx_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    bootstrap_dir = Path("/tmp/git-standup-pipx-bootstrap")
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kwargs))
+        if cmd == ["/broken/pipx", "--version"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli, "_host_python", lambda: "/usr/local/bin/python3.11")
+    monkeypatch.setattr(cli, "_pipx_binary", lambda: "/broken/pipx")
+    monkeypatch.setattr(cli, "_python_pipx_available", lambda _python: False)
+    monkeypatch.setattr(cli, "_pipx_bootstrap_dir", lambda: bootstrap_dir)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.main(["update"]) == 0
+    pipx_check = calls[0]
+    assert pipx_check[0] == ["/broken/pipx", "--version"]
+    assert pipx_check[1]["stdout"] is cli.subprocess.DEVNULL
+    assert pipx_check[1]["stderr"] is cli.subprocess.DEVNULL
+    assert not any(call[0][0] == "/broken/pipx" and call[0][1] == "reinstall" for call in calls)
 
 
 def test_update_command_bootstraps_pipx_with_host_python(
@@ -220,16 +312,6 @@ def test_update_command_bootstraps_pipx_with_host_python(
 ) -> None:
     calls: list[list[str]] = []
     bootstrap_dir = Path("/tmp/git-standup-pipx-bootstrap")
-    install_cmd = [
-        "/usr/bin/python3.11",
-        "-m",
-        "pipx",
-        "install",
-        "--python",
-        "/usr/bin/python3.11",
-        "--force",
-        "git+https://github.com/Tresnanda/git-standup.git",
-    ]
 
     def fake_which(name: str) -> str | None:
         return "/usr/bin/python3.11" if name == "python3.11" else None
@@ -237,13 +319,16 @@ def test_update_command_bootstraps_pipx_with_host_python(
     def fake_exists(self) -> bool:
         return False
 
-    def fake_run(cmd: list[str], check: bool) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
-        if cmd == install_cmd and calls.count(cmd) == 1:
-            raise subprocess.CalledProcessError(1, cmd)
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(cli, "_python_version_ok", lambda path: True)
+    monkeypatch.setattr(cli, "_python_pipx_available", lambda _python: False)
     monkeypatch.setattr(cli, "_pipx_bootstrap_dir", lambda: bootstrap_dir)
     monkeypatch.setattr(cli.shutil, "which", fake_which)
     monkeypatch.setattr(cli.Path, "exists", fake_exists)
@@ -251,7 +336,6 @@ def test_update_command_bootstraps_pipx_with_host_python(
 
     assert cli.main(["update"]) == 0
     assert calls == [
-        install_cmd,
         ["/usr/bin/python3.11", "-m", "venv", str(bootstrap_dir)],
         [
             str(bootstrap_dir / "bin" / "python"),
@@ -264,13 +348,47 @@ def test_update_command_bootstraps_pipx_with_host_python(
         ],
         [
             str(bootstrap_dir / "bin" / "pipx"),
-            "install",
+            "reinstall",
+            "git-standup",
             "--python",
             "/usr/bin/python3.11",
-            "--force",
-            "git+https://github.com/Tresnanda/git-standup.git",
         ],
     ]
+
+
+def test_update_command_silently_checks_python_pipx_before_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    bootstrap_dir = Path("/tmp/git-standup-pipx-bootstrap")
+
+    def fake_which(name: str) -> str | None:
+        return "/usr/bin/python3.11" if name == "python3.11" else None
+
+    def fake_exists(self) -> bool:
+        return False
+
+    def fake_run(
+        cmd: list[str],
+        check: bool,
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((cmd, kwargs))
+        if cmd == ["/usr/bin/python3.11", "-m", "pipx", "--version"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(cli, "_python_version_ok", lambda path: True)
+    monkeypatch.setattr(cli, "_pipx_bootstrap_dir", lambda: bootstrap_dir)
+    monkeypatch.setattr(cli.shutil, "which", fake_which)
+    monkeypatch.setattr(cli.Path, "exists", fake_exists)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli.main(["update"]) == 0
+    pipx_check = calls[0]
+    assert pipx_check[0] == ["/usr/bin/python3.11", "-m", "pipx", "--version"]
+    assert pipx_check[1]["stdout"] is cli.subprocess.DEVNULL
+    assert pipx_check[1]["stderr"] is cli.subprocess.DEVNULL
 
 
 def test_parse_args_accepts_config_subcommands() -> None:
