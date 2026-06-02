@@ -1109,6 +1109,46 @@ def test_multi_select_uses_arrow_keys_and_space_to_select(
     assert "Space selects" in out
 
 
+def test_multi_select_pages_long_option_lists(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_terminal_lines", lambda: 10)
+    options = [f"Tresnanda/repo-{index}" for index in range(1, 21)]
+
+    selected = cli._interactive_multi_select(
+        "Choose remote repositories",
+        options,
+        key_reader=lambda: "\r",
+    )
+
+    assert selected == []
+    out = capsys.readouterr().out
+    assert "Tresnanda/repo-1" in out
+    assert "Tresnanda/repo-6" in out
+    assert "Tresnanda/repo-7" not in out
+    assert "Showing 1-6 of 20. Selected: 0." in out
+
+
+def test_multi_select_scrolls_viewport_with_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "_terminal_lines", lambda: 10)
+    keys = iter(["\x1b[B", "\x1b[B", "\x1b[B", "\x1b[B", "\x1b[B", "\x1b[B", "\r"])
+    options = [f"Tresnanda/repo-{index}" for index in range(1, 21)]
+
+    cli._interactive_multi_select(
+        "Choose remote repositories",
+        options,
+        key_reader=lambda: next(keys),
+    )
+
+    out = capsys.readouterr().out
+    assert "> [ ] Tresnanda/repo-7" in out
+    assert "Showing 4-9 of 20. Selected: 0." in out
+
+
 def test_interactive_choice_uses_arrow_keys_to_select(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
