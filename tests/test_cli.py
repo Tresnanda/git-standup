@@ -299,6 +299,42 @@ def test_markdown_mode_writes_to_output_file(
     assert "- `abc123` Add authentication" in output_path.read_text(encoding="utf-8")
 
 
+def test_emit_markdown_renders_tty_output_but_copies_raw_markdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_markdown = "# Standup Summary\n\n- `abc123` Add authentication\n"
+    rendered: list[object] = []
+    copied: dict[str, object] = {}
+
+    class Tty:
+        def isatty(self) -> bool:
+            return True
+
+        def write(self, _text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    class FakeConsole:
+        def print(self, value: object) -> None:
+            rendered.append(value)
+
+    monkeypatch.setattr(cli.sys, "stdout", Tty())
+    monkeypatch.setattr(cli, "Console", lambda: FakeConsole())
+    monkeypatch.setattr(cli, "Markdown", lambda content: {"markdown": content})
+    monkeypatch.setattr(cli, "clipboard_available", lambda: True)
+    monkeypatch.setattr(cli, "read_single_key", lambda: "c")
+    monkeypatch.setattr(
+        cli, "copy_to_clipboard", lambda content: copied.update(content=content) or True
+    )
+
+    cli._emit_markdown(raw_markdown, None)
+
+    assert rendered == [{"markdown": raw_markdown}]
+    assert copied["content"] == raw_markdown
+
+
 def test_no_commits_returns_success_with_message(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(cli, "get_commits", lambda **_: [])
 
