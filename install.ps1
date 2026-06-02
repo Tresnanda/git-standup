@@ -121,12 +121,35 @@ function Initialize-PipxBootstrap {
     if (-not (Test-Path $venvPython)) {
         $venvPython = Join-Path $venvDir "bin/python"
     }
-    & $venvPython @("-m", "pip", "install", "--upgrade", "pip", "pipx")
+    & $venvPython @("-m", "pip", "install", "--upgrade", "pip", "pipx") *> $null
     $pipxExe = Join-Path $venvDir "Scripts/pipx.exe"
     if (-not (Test-Path $pipxExe)) {
         $pipxExe = Join-Path $venvDir "bin/pipx"
     }
     $script:PipxCommand = @($pipxExe)
+}
+
+function Test-PipxAppInstalled {
+    try {
+        $installed = Invoke-Pipx @("list", "--short") 2>$null
+    } catch {
+        return $false
+    }
+    foreach ($line in $installed) {
+        if ($line -match "^$([regex]::Escape($AppName))(\s|$)") {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Install-OrUpdateApp {
+    if (Test-PipxAppInstalled) {
+        Write-Host "Updating existing $AppName install..."
+        Invoke-Pipx @("reinstall", $AppName, "--python", $Python)
+    } else {
+        Invoke-Pipx @("install", "--python", $Python, $RepoSpec)
+    }
 }
 
 function Find-Python {
@@ -291,10 +314,18 @@ if (Get-Command codex -ErrorAction SilentlyContinue) {
 }
 
 $script:PipxCommand = @()
-if (Get-Command pipx -ErrorAction SilentlyContinue) {
-    $script:PipxCommand = @("pipx")
-    Write-Host "[ok] pipx found"
-} else {
+$pipxExecutable = Get-Command pipx -ErrorAction SilentlyContinue
+if ($pipxExecutable) {
+    $script:PipxCommand = @($pipxExecutable.Source)
+    try {
+        Invoke-Pipx @("--version") *> $null
+        Write-Host "[ok] pipx found"
+    } catch {
+        Write-Host "[info] Ignoring broken pipx at $($pipxExecutable.Source)"
+        $script:PipxCommand = @()
+    }
+}
+if ($script:PipxCommand.Count -eq 0) {
     $script:PipxCommand = @($Python, "-m", "pipx")
     try {
         Invoke-Pipx @("--version") *> $null
@@ -311,7 +342,7 @@ if (Get-Command pipx -ErrorAction SilentlyContinue) {
 Setup-AIDefaults
 
 Write-Host "Installing $AppName from GitHub..."
-Invoke-Pipx @("install", "--python", $Python, "--force", $RepoSpec)
+Install-OrUpdateApp
 if (Get-Command $AppName -ErrorAction SilentlyContinue) {
     & $AppName --help *> $null
     Write-Host "[ok] $AppName installed"

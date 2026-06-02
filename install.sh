@@ -86,8 +86,21 @@ bootstrap_pipx() {
     log "Install pipx manually, then rerun this installer."
     exit 1
   fi
-  "$venv_dir/bin/python" -m pip install --upgrade pip pipx
+  "$venv_dir/bin/python" -m pip install --upgrade pip pipx >/dev/null 2>&1
   PIPX=("$venv_dir/bin/pipx")
+}
+
+pipx_has_app() {
+  "${PIPX[@]}" list --short 2>/dev/null | grep -Eq "^$APP_NAME([[:space:]]|$)"
+}
+
+install_or_update_app() {
+  if pipx_has_app; then
+    log "Updating existing $APP_NAME install..."
+    "${PIPX[@]}" reinstall "$APP_NAME" --python "$PYTHON"
+  else
+    "${PIPX[@]}" install --python "$PYTHON" "$REPO_SPEC"
+  fi
 }
 
 shell_quote() {
@@ -280,14 +293,20 @@ command -v codex >/dev/null 2>&1 && log "[ok] Codex CLI found" || true
 
 PIPX=()
 if command -v pipx >/dev/null 2>&1; then
-  PIPX=("$(command -v pipx)")
-  log "[ok] pipx found"
-elif "$PYTHON" -m pipx --version >/dev/null 2>&1; then
+  pipx_path="$(command -v pipx)"
+  if "$pipx_path" --version >/dev/null 2>&1; then
+    PIPX=("$pipx_path")
+    log "[ok] pipx found"
+  else
+    log "[info] Ignoring broken pipx at $pipx_path"
+  fi
+fi
+if [ "${#PIPX[@]}" -eq 0 ] && "$PYTHON" -m pipx --version >/dev/null 2>&1; then
   PIPX=("$PYTHON" -m pipx)
   log "[ok] pipx found"
-elif ask_yes_no "Install pipx with this Python?" "y"; then
+elif [ "${#PIPX[@]}" -eq 0 ] && ask_yes_no "Install pipx with this Python?" "y"; then
   bootstrap_pipx
-else
+elif [ "${#PIPX[@]}" -eq 0 ]; then
   log "Install pipx and rerun this installer."
   exit 1
 fi
@@ -295,7 +314,7 @@ fi
 setup_ai_defaults
 
 log "Installing $APP_NAME from GitHub..."
-"${PIPX[@]}" install --python "$PYTHON" --force "$REPO_SPEC"
+install_or_update_app
 if command -v "$APP_NAME" >/dev/null 2>&1; then
   "$APP_NAME" --help >/dev/null
   log "[ok] $APP_NAME installed"
