@@ -61,17 +61,28 @@ Replace the single `_numbered_choice("Output style", …)` with:
    ```
    Stored as `answers["format"]` ∈ `{markdown, text, json}`.
 
-2. **AI polish** — shown **only when** `format != json` **AND** an AI provider
-   is available:
-   ```
-   Polish with AI? [Y/n] (y)
-   ```
-   Stored as `answers["ai"]` (bool). When `format == json`, or no provider is
-   available, the question is skipped and `answers["ai"] = False`.
+2. **AI polish** — skipped entirely when `format == json` (`answers["ai"] =
+   False`). Otherwise depends on whether a provider is available:
 
-   "AI provider available" reuses the existing detection already computed in the
-   wizard (`ai_report` from `detect_ai_environment`, plus saved config): true if
-   any env API key, any detected CLI harness, or a saved provider/harness exists.
+   - **Provider available** → simple toggle:
+     ```
+     Polish with AI? [Y/n] (y)
+     ```
+   - **No provider available** → offer on-the-fly setup instead of silently
+     hiding AI:
+     ```
+     Polish with AI? No AI provider detected.
+       1) Set one up now
+       2) Skip AI (raw output)
+     ```
+     "Set one up now" runs `configure_ai_interactive()` (see below). On success
+     `answers["ai"] = True`; if the user cancels setup, fall back to
+     `answers["ai"] = False`.
+
+   Stored as `answers["ai"]` (bool). "Provider available" reuses the detection
+   already computed in the wizard (`ai_report` from `detect_ai_environment`, plus
+   saved config): true if any env API key, any detected CLI harness, or a saved
+   provider/harness exists.
 
 3. **Save to file?** (unchanged `Confirm.ask`, default no). When saving,
    `_default_output_path` is unchanged (markdown→`.md`, json→`.json`, else
@@ -147,6 +158,57 @@ rather than always text.
   — paste-ready for Slack/Notion/GitHub.
 - `text`: instruct plain prose / simple bullets with no Markdown syntax.
 
+## On-the-fly AI provider setup
+
+Today the `git-standup config` command (`run_config_command`, `cli.py:544-608`)
+configures a provider interactively but does **not** handle the API key, and the
+installer (`install.sh`) handles the key but writes TOML directly. The wizard
+needs both. Extract one shared helper and reuse it in all three places.
+
+### `configure_ai_interactive(config_path, *, allow_key=True) -> AIConfig | None`
+
+New function in `cli.py` (or a small `ai_setup.py`), called by both
+`run_config_command` and the wizard. Steps:
+
+1. **Choose a provider** from a numbered list: the `PROVIDER_SPECS` providers,
+   the `codex` CLI harness, local harnesses (`ollama`, `lms`), and `custom`.
+   Returning/cancelling yields `None`.
+2. **Fill defaults** from the chosen `ProviderSpec` (or `_HARNESS_DEFAULTS`):
+   `base_url`, `model` — both editable via `Prompt.ask` with the spec value as
+   default. `custom` prompts for base URL + model with no defaults.
+3. **API key** (only for HTTP API providers, and only when `allow_key`): prompt
+   masked via `getpass.getpass()`. The env var name is the provider spec's first
+   `key_names` entry (e.g. `OPENAI_API_KEY`); `custom` uses `OPENAI_API_KEY`.
+   - Set it in `os.environ` immediately so AI works **this run** (the wizard
+     calls `main()` in-process at `cli.py:677`, so the key is visible).
+   - **Offer to persist** (`Confirm.ask`, default no): append `export VAR="…"`
+     to the shell profile on Unix / `setx VAR "…"` on Windows (see
+     `env_persist.py` below). codex / ollama / lms harnesses need no key — skip
+     this step.
+4. **Save** non-secret defaults via `save_config` (`provider`/`base_url`/`model`,
+   or `harness` for CLI harnesses). Secrets are never written — `config.py`
+   already enforces this.
+5. Return the resulting `AIConfig`.
+
+`run_config_command`'s `set-provider`/`set-cli` paths are refactored to delegate
+to this helper (passing `allow_key=True`), removing duplicated prompting.
+
+### `env_persist.py` (new, no dependency)
+
+- `persist_env_var(name, value) -> Path | str | None` — appends `export
+  name="value"` to the user's shell rc on Unix (zsh → `~/.zshrc`, bash →
+  `~/.bashrc`, else `~/.profile`, chosen from `$SHELL`), de-duping an existing
+  line for the same var; on Windows runs `setx name "value"` via `subprocess`.
+  Returns the path/target touched, or `None` on failure. Mirrors `install.sh`'s
+  profile-writing behavior.
+- The key is masked in all log output; only the `export`/`setx` line is written.
+
+### Caveat to surface to the user
+
+If the user declines to persist the key, the wizard's printed "Generated
+command" will still work *this* run (env is set in-process) but not in a fresh
+shell. The wizard notes this when the key is not persisted.
+
 ## Clipboard copy
 
 New module `clipboard.py`. No third-party dependency (respects the project's
@@ -196,9 +258,17 @@ def _maybe_offer_copy(content) -> None:
 ## Components & boundaries
 
 - `clipboard.py` (new) — OS clipboard + single-key read. No app knowledge.
-- `cli.py` — `build_wizard_args` mapping, wizard prompts, `main()` dispatch,
-  `_emit_output` / `_maybe_offer_copy`, new `--ai` flag, updated help/epilog.
+- `env_persist.py` (new) — persist an env var to shell profile / `setx`. No app
+  knowledge.
+- `configure_ai_interactive()` (new, in `cli.py` or `ai_setup.py`) — shared
+  provider-setup flow used by the wizard and `run_config_command`.
+- `cli.py` — `build_wizard_args` mapping, wizard prompts (incl. on-the-fly AI
+  step), `main()` dispatch, `_emit_output` / `_maybe_offer_copy`, new `--ai`
+  flag, updated help/epilog, `run_config_command` refactored onto the shared
+  helper.
 - `ai.py` — `output_format` parameter threaded through prompt + both generators.
+- `ai_env.py` / `config.py` — unchanged (reused: `PROVIDER_SPECS`,
+  `_HARNESS_DEFAULTS`, `save_config`).
 - `formatter.py` — unchanged.
 
 ## Testing
@@ -218,9 +288,23 @@ New / updated tests:
 - `_maybe_offer_copy`: prompts only when `isatty()` true and no output path; `c`
   triggers copy, other keys / non-TTY skip.
 - **Update** any existing test asserting `--markdown` == raw template.
+- `configure_ai_interactive`: provider selection fills spec defaults; key prompt
+  sets `os.environ` and is offered for persistence; codex/ollama/lms skip the key
+  prompt; cancel returns `None`; `save_config` called with non-secret fields only.
+- `env_persist.persist_env_var`: appends/de-dupes on Unix profile (tmp `$HOME`);
+  Windows `setx` branch with `subprocess` mocked.
+- Wizard AI step: no-provider path offers set-up-now vs skip; success sets
+  `answers["ai"] = True`, cancel sets it `False`.
+- `run_config_command` still saves the right config after delegating to the
+  shared helper (existing config tests stay green).
 
 ## Out of scope
 
 - AI-generated JSON (deliberately excluded).
 - Persisting the AI-toggle preference to config.
 - Clipboard for content saved to a file.
+- On-the-fly provider setup when a provider is *already* available (the wizard
+  only offers setup when none is detected; use `git-standup config` to change an
+  existing one).
+- Storing API keys in `config.toml` (forbidden by design; keys go to env /
+  shell profile only).
