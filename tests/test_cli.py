@@ -1490,6 +1490,7 @@ def test_configure_ai_interactive_sets_key_and_saves(
     config_file = tmp_path / "config.toml"
     choices = iter(["provider", "openai"])
     monkeypatch.setattr(cli, "_choice", lambda *_a, **_k: next(choices))
+    monkeypatch.setattr(cli, "_prompt_model", lambda default: default)
     monkeypatch.setattr(cli.getpass, "getpass", lambda *_a, **_k: "sk-entered")
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -1502,6 +1503,67 @@ def test_configure_ai_interactive_sets_key_and_saves(
     text = config_file.read_text(encoding="utf-8")
     assert 'provider = "openai"' in text
     assert "api_key" not in text  # secrets never written to config
+
+
+def test_configure_ai_interactive_prompts_for_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    choices = iter(["provider", "openai"])
+    seen_defaults: list[str] = []
+
+    def fake_prompt_model(default: str) -> str:
+        seen_defaults.append(default)
+        return "gpt-4o"
+
+    monkeypatch.setattr(cli, "_choice", lambda *_a, **_k: next(choices))
+    monkeypatch.setattr(cli, "_prompt_model", fake_prompt_model)
+    monkeypatch.setattr(cli.getpass, "getpass", lambda *_a, **_k: "sk-entered")
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: False)
+
+    config = cli.configure_ai_interactive(config_file)
+
+    assert seen_defaults == ["gpt-4o-mini"]  # provider default offered as the prefilled value
+    assert config is not None
+    assert config.model == "gpt-4o"
+
+
+def test_configure_ai_interactive_cli_prompts_for_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    choices = iter(["cli", "ollama"])
+    monkeypatch.setattr(cli, "_choice", lambda *_a, **_k: next(choices))
+    monkeypatch.setattr(cli, "_prompt_model", lambda _default: "mistral-nemo")
+
+    config = cli.configure_ai_interactive(config_file)
+
+    assert config is not None
+    assert config.harness == "ollama"
+    assert config.model == "mistral-nemo"
+
+
+def test_configure_ai_interactive_explicit_provider_does_not_prompt_for_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    # The scripted `config set-provider --provider X` path must never prompt
+    # (which would hang on a non-interactive stdin); it keeps the default model.
+    config_file = tmp_path / "config.toml"
+
+    def boom(_default: str) -> str:
+        raise AssertionError("_prompt_model should not be called when provider is explicit")
+
+    monkeypatch.setattr(cli, "_prompt_model", boom)
+
+    config = cli.configure_ai_interactive(
+        config_file, kind="provider", provider="openrouter", allow_key=False
+    )
+
+    assert config is not None
+    assert config.model == "openai/gpt-4o-mini"
 
 
 def test_maybe_offer_copy_copies_on_c_keypress(monkeypatch: pytest.MonkeyPatch) -> None:
