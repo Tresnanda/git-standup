@@ -24,6 +24,7 @@ from git_standup.clipboard import clipboard_available, copy_to_clipboard, read_s
 from git_standup.config import AIConfig, config_path, load_config, reset_config, save_config
 from git_standup.env_persist import persist_env_var
 from git_standup.formatter import (
+    build_changelog_output,
     build_json_output,
     build_markdown_output,
     build_text_output,
@@ -454,6 +455,8 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     use_ai = bool(answers.get("ai", True))
     if output_format == "json":
         args.append("--json")
+    elif output_format == "changelog":
+        args.append("--changelog")
     elif output_format == "markdown":
         args.append("--markdown")
         if not use_ai:
@@ -472,6 +475,8 @@ def _today_string() -> str:
 
 
 def _default_output_path(output_format: str) -> str:
+    if output_format == "changelog":
+        return "changelog.md"
     if output_format == "markdown":
         return "standup.md"
     if output_format == "json":
@@ -776,11 +781,16 @@ def run_wizard() -> int:
             ("markdown", "Markdown", "Paste-ready for Slack, Notion, or GitHub."),
             ("text", "Plain text", "Simple terminal summary."),
             ("json", "JSON", "Structured data for scripts or automation."),
+            (
+                "changelog",
+                "Changelog",
+                "Release-note Markdown grouped by conventional commit type.",
+            ),
         ],
         "markdown",
     )
 
-    if answers["format"] == "json":
+    if answers["format"] in {"json", "changelog"}:
         answers["ai"] = False
     elif _ai_provider_available(ai_report):
         answers["ai"] = Confirm.ask("Polish with AI?", default=True)
@@ -833,6 +843,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --no-ai             # Text summary without AI\n"
         "  git-standup --markdown          # AI-polished Markdown summary\n"
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
+        "  git-standup --changelog        # Release-note Markdown without AI\n"
         "  git-standup --json              # Raw JSON output\n"
         "  git-standup --max-commits 20 --max-files-per-commit 10\n"
         "  git-standup --markdown --output standup.md\n"
@@ -934,6 +945,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Output a Markdown summary (AI-polished unless --no-ai)",
     )
     parser.add_argument(
+        "--changelog",
+        action="store_true",
+        help=(
+            "Output release-note Markdown grouped by conventional commit category "
+            "(always no AI)"
+        ),
+    )
+    parser.add_argument(
         "--output", "--out",
         type=str,
         default=None,
@@ -1017,6 +1036,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                     "provide a repository path either positionally or with --repo, not both"
                 )
             args.repo = target
+    if args.changelog and args.json:
+        parser.error("--changelog cannot be combined with --json")
+    if args.changelog and args.markdown:
+        parser.error("--changelog cannot be combined with --markdown; it already emits Markdown")
     del args.tokens
     return args
 
@@ -1070,6 +1093,17 @@ def main(argv: list[str] | None = None) -> int:
         max_commits=args.max_commits,
         max_files_per_commit=args.max_files_per_commit,
     )
+
+    if args.changelog:
+        if args.ai:
+            print(
+                "Warning: --ai has no effect with --changelog; changelog is always raw.",
+                file=sys.stderr,
+            )
+        changelog = build_changelog_output(commits, budget_metadata)
+        _emit(changelog, args.output, lambda: print(changelog, end=""))
+        return 0
+
     commit_data = _build_commit_data(commits)
 
     if args.json:
