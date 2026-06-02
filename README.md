@@ -11,6 +11,7 @@ Generate standup-ready summaries from Git history.
 - Shows file-level change stats in local text mode.
 - Exports structured JSON for automation and reporting.
 - Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
+- Builds non-AI changelog Markdown for release notes with `--changelog`.
 - Can run against another repository path with `--repo`.
 - Supports exact report windows with `--since` and `--until`.
 - Writes summaries directly to files with `--output`.
@@ -84,14 +85,16 @@ Output format:
   1) Markdown - Paste-ready for Slack, Notion, or GitHub.
   2) Plain text - Simple terminal summary.
   3) JSON - Structured data for scripts or automation.
+  4) Changelog - Release-note Markdown grouped by conventional commit type.
 
 Polish with AI? [Y/n]
 ```
 
 The wizard asks for a format, then whether to polish it with AI (skipped for
-JSON). Markdown and Plain text can each be produced with or without AI. If no AI
-provider is detected, the wizard offers to set one up on the fly. When the
-report is printed instead of saved, press `c` to copy it to the clipboard.
+JSON and changelog). Markdown and Plain text can each be produced with or
+without AI. If no AI provider is detected, the wizard offers to set one up on
+the fly. When the report is printed instead of saved, press `c` to copy it to
+the clipboard.
 
 Update to the latest GitHub version at any time:
 
@@ -127,6 +130,12 @@ Print AI-polished Markdown (or add `--no-ai` for a raw template):
 
 ```bash
 git-standup --markdown
+```
+
+Generate release-note style changelog Markdown without AI:
+
+```bash
+git-standup --since 2026-01-01 --until 2026-01-07 --changelog
 ```
 
 Run from anywhere against another repository:
@@ -244,13 +253,21 @@ git-standup --author me --days 7 --markdown --output standup.md
 
 Markdown mode preserves the local, no-AI workflow while producing output that is easy to paste into issue comments, pull request updates, team notes, or status docs.
 
+### Release Notes Changelog
+
+```bash
+git-standup --since 2026-01-01 --until 2026-01-07 --changelog --output changelog.md
+```
+
+Changelog mode is always non-AI. It groups conventional commits into Features, Fixes, Docs, Refactors, Chores, and Other, strips conventional prefixes for cleaner bullets, and includes changed-file/line stats plus top touched files for quick release-note context. It respects the same filters and ranges as other modes, including `--author`, `--base-branch`, `--max-commits`, and `--max-files-per-commit`.
+
 ## CLI Reference
 
 ```text
 usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
                    [--base-branch BASE_BRANCH] [--json] [--no-ai]
-                   [--ai] [--markdown] [--output OUTPUT]
+                   [--ai] [--markdown] [--changelog] [--output OUTPUT]
                    [--api-key API_KEY] [--provider PROVIDER]
                    [--harness HARNESS] [--model MODEL]
                    [--base-url BASE_URL] [--version] [--no-wizard]
@@ -269,6 +286,8 @@ options:
   --no-ai              Skip AI and print a raw formatted summary.
   --ai                 Force AI mode (default for text/markdown; ignored with --json).
   --markdown           Print a Markdown summary (AI-polished unless --no-ai).
+  --changelog          Print release-note Markdown grouped by conventional commit
+                       category (always raw; AI is ignored).
   --output, --out PATH Write JSON, Markdown, text, or AI output to a file.
   --api-key KEY        API key for AI summaries. Defaults to OPENAI_API_KEY.
   --provider NAME      Provider override or config provider name.

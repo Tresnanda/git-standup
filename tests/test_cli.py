@@ -136,6 +136,73 @@ def test_markdown_mode_prints_paste_ready_summary(
     assert "- `abc123` Add authentication" in output
 
 
+def test_changelog_mode_prints_release_note_markdown_without_ai(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    commits = _sample_commits()
+    commits[0]["subject"] = "feat(auth): add authentication"
+    captured: dict[str, object] = {}
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return commits
+
+    def fail_if_called(**_: object) -> str:
+        raise AssertionError("AI should not be called in changelog mode")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+    monkeypatch.setattr(cli, "generate_standup", fail_if_called)
+
+    exit_code = cli.main(
+        [
+            "--changelog",
+            "--since",
+            "2026-01-01",
+            "--until",
+            "2026-01-07",
+            "--author",
+            "Alice",
+            "--max-commits",
+            "5",
+            "--max-files-per-commit",
+            "2",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["since"] == "2026-01-01"
+    assert captured["until"] == "2026-01-07"
+    assert captured["author"] == "Alice"
+    assert captured["max_commits"] == 6
+    output = capsys.readouterr().out
+    assert "# Changelog" in output
+    assert "## Features" in output
+    assert "- **auth:** add authentication (`abc123`)" in output
+    assert "## Change Stats" in output
+
+
+def test_changelog_mode_writes_to_output_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    commits = _sample_commits()
+    commits[0]["subject"] = "fix: repair login redirect"
+    monkeypatch.setattr(cli, "get_commits", lambda **_: commits)
+    output_path = tmp_path / "changelog.md"
+
+    exit_code = cli.main(["--changelog", "--output", str(output_path)])
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == ""
+    output = output_path.read_text(encoding="utf-8")
+    assert "# Changelog" in output
+    assert "## Fixes" in output
+    assert "repair login redirect" in output
+
+
 def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -176,6 +243,9 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
     assert repo.repo == "../api"
     assert repo.markdown is True
     assert repo.output == "standup.md"
+
+    changelog = cli.parse_args(["--changelog"])
+    assert changelog.changelog is True
 
 
 def test_markdown_mode_writes_to_output_file(
@@ -600,6 +670,21 @@ def test_build_wizard_args_json_ignores_ai_toggle() -> None:
     assert args == ["--since", "2026-06-02", "--json"]
 
 
+def test_build_wizard_args_changelog_is_raw_markdown_release_notes() -> None:
+    args = cli.build_wizard_args(
+        {
+            "repo": ".",
+            "preset": "custom",
+            "days": "14",
+            "format": "changelog",
+            "ai": True,
+            "output": "changelog.md",
+        }
+    )
+
+    assert args == ["--days", "14", "--changelog", "--output", "changelog.md"]
+
+
 def test_build_wizard_args_for_multiple_selected_authors() -> None:
     args = cli.build_wizard_args(
         {
@@ -618,6 +703,7 @@ def test_default_output_path_matches_output_style() -> None:
     assert cli._default_output_path("text") == "standup.txt"
     assert cli._default_output_path("markdown") == "standup.md"
     assert cli._default_output_path("json") == "standup.json"
+    assert cli._default_output_path("changelog") == "changelog.md"
 
 
 def test_numbered_choice_shows_plain_language_options(
@@ -703,7 +789,10 @@ def test_run_wizard_asks_timeframe_then_author_then_format(
         {"choices": ["1", "2", "3", "4"], "default": "2"},
     )
     assert prompts[2] == ("By who choice", {"choices": ["1", "2", "3"], "default": "1"})
-    assert prompts[3] == ("Output format choice", {"choices": ["1", "2", "3"], "default": "1"})
+    assert prompts[3] == (
+        "Output format choice",
+        {"choices": ["1", "2", "3", "4"], "default": "1"},
+    )
     out = capsys.readouterr().out
     assert "Review changes from:" in out
     assert "This week - Last 7 days." in out

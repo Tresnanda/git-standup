@@ -1,6 +1,8 @@
 """Output formatting — pretty printing with Rich and JSON serialization."""
 
 import json
+import re
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
@@ -8,6 +10,43 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
+
+CHANGELOG_CATEGORIES = (
+    "Features",
+    "Fixes",
+    "Docs",
+    "Refactors",
+    "Chores",
+    "Other",
+)
+
+_CHANGELOG_TYPE_MAP = {
+    "feat": "Features",
+    "feature": "Features",
+    "fix": "Fixes",
+    "fixes": "Fixes",
+    "bugfix": "Fixes",
+    "docs": "Docs",
+    "doc": "Docs",
+    "refactor": "Refactors",
+    "refactoring": "Refactors",
+    "chore": "Chores",
+    "ci": "Chores",
+    "build": "Chores",
+    "test": "Chores",
+    "tests": "Chores",
+    "style": "Chores",
+    "lint": "Chores",
+    "deps": "Chores",
+    "dependency": "Chores",
+    "dependencies": "Chores",
+}
+
+_CONVENTIONAL_SUBJECT_RE = re.compile(
+    r"^(?P<type>[A-Za-z][A-Za-z0-9-]*)"
+    r"(?:\((?P<scope>[^)]+)\))?"
+    r"(?P<breaking>!)?:\s*(?P<description>.+)$"
+)
 
 
 def build_json_output(
@@ -56,6 +95,180 @@ def build_markdown_output(
             )
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def build_changelog_output(
+    commits: list[dict[str, Any]],
+    budget_metadata: dict[str, Any] | None = None,
+) -> str:
+    """Build release-note style Markdown grouped by conventional commit category."""
+    categories: dict[str, list[dict[str, Any]]] = {
+        category: [] for category in CHANGELOG_CATEGORIES
+    }
+    authors: set[str] = set()
+    files_by_path: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"path": "", "insertions": 0, "deletions": 0, "commits": 0}
+    )
+    total_insertions = 0
+    total_deletions = 0
+
+    for commit in commits:
+        author = commit.get("author_name")
+        if author:
+            authors.add(str(author))
+
+        category, description, breaking = _changelog_commit_summary(commit)
+        entry = {
+            "commit": commit,
+            "description": description,
+            "breaking": breaking,
+            "files": _sorted_commit_files(commit),
+        }
+        categories[category].append(entry)
+
+        for file_stat in commit.get("files", []):
+            path = str(file_stat.get("path") or "unknown")
+            insertions = int(file_stat.get("insertions", 0) or 0)
+            deletions = int(file_stat.get("deletions", 0) or 0)
+            file_total = files_by_path[path]
+            file_total["path"] = path
+            file_total["insertions"] += insertions
+            file_total["deletions"] += deletions
+            file_total["commits"] += 1
+            total_insertions += insertions
+            total_deletions += deletions
+
+    lines = ["# Changelog", ""]
+    files_changed = len(files_by_path)
+    author_count = len(authors)
+    summary_parts = [
+        f"{len(commits)} commit(s)",
+        f"{files_changed} file(s) changed",
+        f"+{total_insertions}/-{total_deletions} lines",
+    ]
+    if author_count:
+        summary_parts.append(f"{author_count} author(s)")
+    lines.extend([f"_{' · '.join(summary_parts)}_", ""])
+
+    if budget_metadata and budget_metadata.get("truncated"):
+        lines.extend([_format_changelog_budget_note(budget_metadata), ""])
+
+    for category in CHANGELOG_CATEGORIES:
+        entries = categories[category]
+        if not entries:
+            continue
+        lines.extend([f"## {category}", ""])
+        for entry in entries:
+            commit = entry["commit"]
+            hash_short = str(commit.get("hash", ""))[:8]
+            stats_text = _format_commit_change_summary(entry["files"])
+            prefix = "⚠️ " if entry["breaking"] else ""
+            hash_text = f" (`{hash_short}`)" if hash_short else ""
+            lines.append(f"- {prefix}{entry['description']}{hash_text} — {stats_text}")
+
+            file_highlights = _format_file_highlights(entry["files"])
+            if file_highlights:
+                lines.append(f"  - Files: {file_highlights}")
+            truncated = commit.get("truncated", {})
+            if truncated.get("files"):
+                lines.append(
+                    "  - Files omitted by `--max-files-per-commit`: "
+                    f"{truncated.get('files_omitted', 0)}"
+                )
+        lines.append("")
+
+    lines.extend(["## Change Stats", ""])
+    lines.append(
+        f"- Total: {len(commits)} commit(s), {files_changed} file(s), "
+        f"+{total_insertions}/-{total_deletions} lines"
+    )
+    if authors:
+        lines.append(f"- Authors: {', '.join(sorted(authors))}")
+    top_files = _format_file_highlights(
+        sorted(
+            files_by_path.values(),
+            key=lambda item: (
+                int(item.get("insertions", 0) or 0) + int(item.get("deletions", 0) or 0),
+                str(item.get("path", "")),
+            ),
+            reverse=True,
+        ),
+        limit=5,
+    )
+    if top_files:
+        lines.append(f"- Top files: {top_files}")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _changelog_commit_summary(commit: dict[str, Any]) -> tuple[str, str, bool]:
+    """Return (category, release-note description, breaking) for one commit."""
+    subject = str(commit.get("subject", "")).strip() or "Untitled commit"
+    body = str(commit.get("body", ""))
+    match = _CONVENTIONAL_SUBJECT_RE.match(subject)
+    body_breaking = "BREAKING CHANGE:" in body or "BREAKING-CHANGE:" in body
+    if not match:
+        return "Other", subject, body_breaking
+
+    commit_type = match.group("type").lower()
+    category = _CHANGELOG_TYPE_MAP.get(commit_type, "Other")
+    scope = match.group("scope")
+    description = match.group("description").strip()
+    if scope:
+        description = f"**{scope}:** {description}"
+    breaking = bool(match.group("breaking")) or body_breaking
+    return category, description, breaking
+
+
+def _sorted_commit_files(commit: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return changed files ordered by largest line delta, then path."""
+    return sorted(
+        commit.get("files", []),
+        key=lambda item: (
+            int(item.get("insertions", 0) or 0) + int(item.get("deletions", 0) or 0),
+            str(item.get("path", "")),
+        ),
+        reverse=True,
+    )
+
+
+def _format_commit_change_summary(files: list[dict[str, Any]]) -> str:
+    """Format per-commit changed-file/line stats for changelog bullets."""
+    insertions = sum(int(file_stat.get("insertions", 0) or 0) for file_stat in files)
+    deletions = sum(int(file_stat.get("deletions", 0) or 0) for file_stat in files)
+    unique_files = {str(file_stat.get("path") or "unknown") for file_stat in files}
+    if not unique_files:
+        return "no file stats"
+    return f"{len(unique_files)} file(s), +{insertions}/-{deletions} lines"
+
+
+def _format_file_highlights(files: list[dict[str, Any]], limit: int = 3) -> str:
+    """Format a compact list of changed files for Markdown output."""
+    highlights: list[str] = []
+    for file_stat in files[:limit]:
+        path = str(file_stat.get("path") or "unknown")
+        insertions = int(file_stat.get("insertions", 0) or 0)
+        deletions = int(file_stat.get("deletions", 0) or 0)
+        highlights.append(f"`{path}` (+{insertions}/-{deletions})")
+    remaining = len(files) - limit
+    if remaining > 0:
+        highlights.append(f"+{remaining} more")
+    return ", ".join(highlights)
+
+
+def _format_changelog_budget_note(budget_metadata: dict[str, Any]) -> str:
+    """Format output-budget metadata as a human-readable Markdown note."""
+    limits = budget_metadata.get("limits", {})
+    notes: list[str] = []
+    if budget_metadata.get("commits_truncated"):
+        notes.append(f"commit list limited to {limits.get('max_commits')} commit(s)")
+    if budget_metadata.get("files_truncated"):
+        notes.append(
+            "file lists limited to "
+            f"{limits.get('max_files_per_commit')} file(s) per commit "
+            f"({budget_metadata.get('files_omitted', 0)} omitted)"
+        )
+    return "_Note: output was truncated — " + "; ".join(notes) + "._"
 
 
 def build_text_output(
