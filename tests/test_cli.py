@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import types
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -1120,6 +1121,35 @@ def test_interactive_confirm_uses_same_selector() -> None:
         default=True,
         key_reader=lambda: next(keys),
     ) is False
+
+
+def test_terminal_key_reader_reads_full_arrow_escape_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TtyStdin:
+        def isatty(self) -> bool:
+            return True
+
+        def fileno(self) -> int:
+            return 99
+
+    reads = iter([b"\x1b", b"[", b"B"])
+    ready = iter([([99], [], []), ([99], [], []), ([], [], [])])
+    fake_termios = types.SimpleNamespace(
+        TCSADRAIN=1,
+        tcgetattr=lambda _fd: "old",
+        tcsetattr=lambda *_args: None,
+    )
+    fake_tty = types.SimpleNamespace(setraw=lambda _fd: None)
+
+    monkeypatch.setattr(cli.sys, "stdin", TtyStdin())
+    monkeypatch.setitem(cli.sys.modules, "msvcrt", None)
+    monkeypatch.setitem(cli.sys.modules, "termios", fake_termios)
+    monkeypatch.setitem(cli.sys.modules, "tty", fake_tty)
+    monkeypatch.setattr(cli.os, "read", lambda _fd, _size: next(reads))
+    monkeypatch.setattr(cli.select, "select", lambda *_args: next(ready))
+
+    assert cli._read_terminal_key() == "\x1b[B"
 
 
 def test_main_opens_wizard_for_bare_interactive_command(

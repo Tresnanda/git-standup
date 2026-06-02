@@ -579,13 +579,13 @@ def _read_terminal_key() -> str:
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        key = sys.stdin.read(1)
+        key = os.read(fd, 1).decode(errors="ignore")
         if key == "\x1b":
             while True:
-                ready, _, _ = select.select([sys.stdin], [], [], 0.01)
+                ready, _, _ = select.select([fd], [], [], 0.05)
                 if not ready:
                     break
-                key += sys.stdin.read(1)
+                key += os.read(fd, 1).decode(errors="ignore")
         return key
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
