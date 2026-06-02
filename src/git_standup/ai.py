@@ -15,8 +15,19 @@ _MAX_PROMPT_CHARS = 120_000
 def _build_prompt(
     commit_data: dict[str, Any],
     style: str = "standup",
+    budget_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Build a structured prompt from commit data."""
+    metadata_section = ""
+    if budget_metadata is not None:
+        metadata_section = f"""
+
+TRUNCATION METADATA:
+{json.dumps(budget_metadata, indent=2, default=str)}
+
+If truncated is true, explicitly note that the summary is based on a budgeted
+subset of the git data and avoid inferring details from omitted commits/files."""
+
     return f"""You are a helpful assistant that generates a concise weekly
 standup summary from git commit data.
 
@@ -29,6 +40,7 @@ Use bullet points or short paragraphs. Include:
 - What work was done (organized by author/project area)
 - Notable changes or feature work
 - Bug fixes or maintenance
+{metadata_section}
 
 COMMIT DATA:
 {json.dumps(commit_data, indent=2, default=str)}
@@ -41,6 +53,7 @@ def generate_standup(
     api_key: str | None = None,
     model: str = "gpt-4o-mini",
     base_url: str | None = None,
+    budget_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Send commit data to an LLM and return a natural-language standup summary.
 
@@ -68,7 +81,7 @@ def generate_standup(
     url_base = base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
     url = f"{url_base.rstrip('/')}/chat/completions"
 
-    prompt = _build_prompt(commit_data)
+    prompt = _build_prompt(commit_data, budget_metadata=budget_metadata)
 
     # Truncate prompt if too long
     if len(prompt) > _MAX_PROMPT_CHARS:
@@ -120,13 +133,14 @@ def generate_standup_with_harness(
     commit_data: dict[str, Any],
     harness: str,
     model: str = "",
+    budget_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Generate a standup summary with a local AI CLI harness."""
     if harness != "codex":
         raise RuntimeError(f"Unsupported AI CLI harness: {harness}")
 
     prompt = (
-        _build_prompt(commit_data)
+        _build_prompt(commit_data, budget_metadata=budget_metadata)
         + "\n\nReturn only the finished standup summary. Do not edit files or run commands."
     )
     command = [

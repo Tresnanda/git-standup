@@ -60,21 +60,82 @@ def _build_commit_data(
         date_data: dict[str, Any] = {}
         for date_key, day_commits in by_date.items():
             stats = compute_stats(day_commits)
+            commit_items: list[dict[str, Any]] = []
+            for c in day_commits:
+                item = {
+                    "hash": c.get("hash", ""),
+                    "subject": c.get("subject", ""),
+                    "body": c.get("body", ""),
+                    "files": c.get("files", []),
+                }
+                if c.get("truncated"):
+                    item["truncated"] = c["truncated"]
+                commit_items.append(item)
             date_data[date_key] = {
-                "commits": [
-                    {
-                        "hash": c.get("hash", ""),
-                        "subject": c.get("subject", ""),
-                        "body": c.get("body", ""),
-                        "files": c.get("files", []),
-                    }
-                    for c in day_commits
-                ],
+                "commits": commit_items,
                 "stats": stats,
             }
         result[author] = date_data
 
     return result
+
+
+def _apply_output_budget(
+    commits: list[dict[str, Any]],
+    *,
+    max_commits: int | None,
+    max_files_per_commit: int | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Apply optional output/AI-input limits without changing default output."""
+    if max_commits is None and max_files_per_commit is None:
+        return commits, None
+
+    commits_truncated = max_commits is not None and len(commits) > max_commits
+    included_commits = commits[:max_commits] if max_commits is not None else commits
+    budgeted_commits: list[dict[str, Any]] = []
+    files_omitted = 0
+    commits_with_files_truncated = 0
+
+    for commit in included_commits:
+        budgeted_commit = dict(commit)
+        files = list(commit.get("files", []))
+        if max_files_per_commit is not None and len(files) > max_files_per_commit:
+            omitted = len(files) - max_files_per_commit
+            files = files[:max_files_per_commit]
+            files_omitted += omitted
+            commits_with_files_truncated += 1
+            budgeted_commit["truncated"] = {
+                "files": True,
+                "files_omitted": omitted,
+            }
+        budgeted_commit["files"] = files
+        budgeted_commits.append(budgeted_commit)
+
+    files_truncated = files_omitted > 0
+    metadata = {
+        "truncated": commits_truncated or files_truncated,
+        "limits": {
+            "max_commits": max_commits,
+            "max_files_per_commit": max_files_per_commit,
+        },
+        "commits_included": len(budgeted_commits),
+        "commits_truncated": commits_truncated,
+        "more_commits_available": commits_truncated,
+        "files_truncated": files_truncated,
+        "commits_with_files_truncated": commits_with_files_truncated,
+        "files_omitted": files_omitted,
+    }
+    return budgeted_commits, metadata
+
+
+def _with_budget_metadata(
+    commit_data: dict[str, Any],
+    budget_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Add JSON-only budgeting metadata when budgeting flags were supplied."""
+    if budget_metadata is None:
+        return commit_data
+    return {"_metadata": budget_metadata, **commit_data}
 
 
 def _positive_int(value: str) -> int:
@@ -580,6 +641,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --no-ai             # Text summary without LLM\n"
         "  git-standup --markdown          # Markdown summary without LLM\n"
         "  git-standup --json              # Raw JSON output\n"
+        "  git-standup --max-commits 20 --max-files-per-commit 10\n"
         "  git-standup --markdown --output standup.md\n"
         "  git-standup --api-key sk-...    # Custom API key\n"
         "  git-standup --model gpt-4       # Custom model\n"
@@ -631,6 +693,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Base branch for comparing changes (e.g., 'main'). Shows commits "
         "in current branch not in base.",
+    )
+    parser.add_argument(
+        "--max-commits",
+        type=_positive_int,
+        default=None,
+        help="Maximum commits to include in output and AI input",
+    )
+    parser.add_argument(
+        "--max-files-per-commit",
+        type=_positive_int,
+        default=None,
+        help="Maximum changed files to include per commit in output and AI input",
     )
     parser.add_argument(
         "--json",
@@ -757,6 +831,9 @@ def main(argv: list[str] | None = None) -> int:
         return run_config_command(args)
 
     try:
+        commit_fetch_limit = (
+            args.max_commits + 1 if args.max_commits is not None else None
+        )
         commits = get_commits(
             days=args.days,
             author=args.author,
@@ -764,6 +841,7 @@ def main(argv: list[str] | None = None) -> int:
             repo_path=args.repo,
             since=args.since,
             until=args.until,
+            max_commits=commit_fetch_limit,
         )
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -773,10 +851,15 @@ def main(argv: list[str] | None = None) -> int:
         print("No commits found in the specified time range.")
         return 0
 
+    commits, budget_metadata = _apply_output_budget(
+        commits,
+        max_commits=args.max_commits,
+        max_files_per_commit=args.max_files_per_commit,
+    )
     commit_data = _build_commit_data(commits)
 
     if args.json:
-        output = build_json_output(commit_data)
+        output = build_json_output(_with_budget_metadata(commit_data, budget_metadata))
         if not _write_output(output + "\n", args.output):
             print(output)
         return 0
@@ -812,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
                 commit_data=commit_data,
                 harness=connection.provider,
                 model=connection.model,
+                budget_metadata=budget_metadata,
             )
         else:
             standup_text = generate_standup(
@@ -819,6 +903,7 @@ def main(argv: list[str] | None = None) -> int:
                 api_key=connection.api_key,
                 model=connection.model,
                 base_url=connection.base_url,
+                budget_metadata=budget_metadata,
             )
     except RuntimeError as exc:
         # Fall back to text summary if AI fails
