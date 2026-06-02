@@ -681,6 +681,24 @@ def test_update_command_silently_checks_python_pipx_before_bootstrap(
     assert pipx_check[1]["stderr"] is cli.subprocess.DEVNULL
 
 
+def test_update_prompt_uses_line_confirm_not_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        cli,
+        "check_for_update",
+        lambda: cli.UpdateCheck(True, "old", "new"),
+    )
+    monkeypatch.setattr(cli, "run_update", lambda: calls.update(updated=True))
+    monkeypatch.setattr(cli, "_confirm", lambda *_args, **_kwargs: calls.update(selector=True))
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: True)
+
+    assert cli.prompt_for_update_if_available() is True
+    assert calls == {"updated": True}
+
+
 def test_parse_args_accepts_config_subcommands() -> None:
     show = cli.parse_args(["config", "show"])
     assert show.command == "config"
