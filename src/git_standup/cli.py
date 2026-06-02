@@ -132,14 +132,20 @@ def _apply_output_budget(
     return budgeted_commits, metadata
 
 
-def _with_budget_metadata(
+def _with_json_metadata(
     commit_data: dict[str, Any],
     budget_metadata: dict[str, Any] | None,
+    pathspecs: list[str] | None,
 ) -> dict[str, Any]:
-    """Add JSON-only budgeting metadata when budgeting flags were supplied."""
-    if budget_metadata is None:
+    """Add JSON-only metadata when optional report filters/limits are supplied."""
+    metadata: dict[str, Any] = {}
+    if budget_metadata is not None:
+        metadata.update(budget_metadata)
+    if pathspecs:
+        metadata["pathspecs"] = list(pathspecs)
+    if not metadata:
         return commit_data
-    return {"_metadata": budget_metadata, **commit_data}
+    return {"_metadata": metadata, **commit_data}
 
 
 def _positive_int(value: str) -> int:
@@ -830,8 +836,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup ../api --markdown   # Run against another repository\n"
         "  git-standup --days 1            # Yesterday only\n"
         "  git-standup --repo ../api       # Run against another repository\n"
+        "  git-standup --path src --path tests  # Only commits touching paths\n"
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
         "  git-standup --author me         # My commits only\n"
+        "  git-standup --exclude-merges   # Hide merge commits\n"
         "  git-standup --no-ai             # Text summary without AI\n"
         "  git-standup --markdown          # AI-polished Markdown summary\n"
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
@@ -891,6 +899,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "in current branch not in base.",
     )
     parser.add_argument(
+        "--path",
+        "--pathspec",
+        dest="pathspecs",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="Only include commits touching this pathspec. Repeat for multiple paths.",
+    )
+    parser.add_argument(
         "--max-commits",
         type=_positive_int,
         default=None,
@@ -901,6 +918,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=None,
         help="Maximum changed files to include per commit in output and AI input",
+    )
+    parser.add_argument(
+        "--exclude-merges",
+        action="store_true",
+        help="Exclude merge commits from git history",
     )
     parser.add_argument(
         "--json",
@@ -1055,6 +1077,8 @@ def main(argv: list[str] | None = None) -> int:
             since=args.since,
             until=args.until,
             max_commits=commit_fetch_limit,
+            exclude_merges=args.exclude_merges,
+            pathspecs=args.pathspecs,
         )
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -1088,7 +1112,9 @@ def main(argv: list[str] | None = None) -> int:
                 "Warning: --ai has no effect with --json; JSON is always raw.",
                 file=sys.stderr,
             )
-        output = build_json_output(_with_budget_metadata(commit_data, budget_metadata))
+        output = build_json_output(
+            _with_json_metadata(commit_data, budget_metadata, args.pathspecs)
+        )
         _emit(output + "\n", args.output, lambda: print(output))
         return 0
 

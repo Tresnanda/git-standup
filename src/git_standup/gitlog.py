@@ -41,6 +41,8 @@ def get_commits(
     since: str | None = None,
     until: str | None = None,
     max_commits: int | None = None,
+    exclude_merges: bool = False,
+    pathspecs: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for the last N days.
 
@@ -76,6 +78,9 @@ def get_commits(
     if until:
         cmd.insert(5, f"--until={until}")
 
+    if exclude_merges:
+        cmd.append("--no-merges")
+
     if max_commits is not None:
         cmd.extend(["-n", str(max_commits)])
 
@@ -87,6 +92,10 @@ def get_commits(
             # Get current user's name and email
             author = _get_current_user(repo_root)
         cmd.extend([f"--author={author}"])
+
+    if pathspecs:
+        cmd.append("--")
+        cmd.extend(pathspecs)
 
     try:
         result = subprocess.run(
