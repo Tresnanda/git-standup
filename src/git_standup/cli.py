@@ -440,7 +440,9 @@ def prompt_for_update_if_available() -> bool:
     check = check_for_update()
     if not check.available:
         return False
-    if _confirm(f"New {APP_NAME} update found. Update now?", default=False):
+    # Keep the updater prompt line-based so a broken old key reader cannot trap
+    # users before they get a chance to install the fix.
+    if Confirm.ask(f"New {APP_NAME} update found. Update now?", default=False):
         run_update()
         return True
     return False
