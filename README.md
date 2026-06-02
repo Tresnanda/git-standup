@@ -129,6 +129,31 @@ Update to the latest GitHub version at any time:
 git-standup update
 ```
 
+## Agent Skill
+
+`git-standup` includes an optional agent skill for Codex and other agents that
+use the open Skills CLI. The skill teaches agents to use the CLI for standups,
+weekly updates, changelogs, PR summaries, OSS activity logs, and multi-repo
+reports instead of rebuilding Git history logic by hand.
+
+Install the skill:
+
+```bash
+npx skills add Tresnanda/git-standup --skill git-standup
+```
+
+Install globally for all projects:
+
+```bash
+npx skills add Tresnanda/git-standup --skill git-standup -g
+```
+
+List the skill without installing:
+
+```bash
+npx skills add Tresnanda/git-standup -l
+```
+
 To force the previous immediate default report from an interactive shell, use:
 
 ```bash
