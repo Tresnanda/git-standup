@@ -80,12 +80,18 @@ Report type:
   3) Branch changes - Compare this branch against a base branch.
   4) Custom range - Choose days, dates, or author filters.
 
-Output style:
-  1) Plain text - Simple terminal summary without AI.
-  2) Markdown - Paste-ready Markdown for Slack, Notion, GitHub, or a file.
-  3) JSON - Structured data for scripts, dashboards, or automation.
-  4) AI summary - Use your configured AI provider or CLI for a polished draft.
+Output format:
+  1) Markdown - Paste-ready for Slack, Notion, or GitHub.
+  2) Plain text - Simple terminal summary.
+  3) JSON - Structured data for scripts or automation.
+
+Polish with AI? [Y/n]
 ```
+
+The wizard asks for a format, then whether to polish it with AI (skipped for
+JSON). Markdown and Plain text can each be produced with or without AI. If no AI
+provider is detected, the wizard offers to set one up on the fly. When the
+report is printed instead of saved, press `c` to copy it to the clipboard.
 
 Update to the latest GitHub version at any time:
 
@@ -117,7 +123,7 @@ Export structured JSON:
 git-standup --json
 ```
 
-Print Markdown:
+Print AI-polished Markdown (or add `--no-ai` for a raw template):
 
 ```bash
 git-standup --markdown
@@ -244,7 +250,7 @@ Markdown mode preserves the local, no-AI workflow while producing output that is
 usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
                    [--base-branch BASE_BRANCH] [--json] [--no-ai]
-                   [--markdown] [--output OUTPUT]
+                   [--ai] [--markdown] [--output OUTPUT]
                    [--api-key API_KEY] [--provider PROVIDER]
                    [--harness HARNESS] [--model MODEL]
                    [--base-url BASE_URL] [--version] [--no-wizard]
@@ -259,9 +265,10 @@ options:
   --until DATE         End date for the report window, in YYYY-MM-DD format.
   --author AUTHOR      Filter by author. Use "me" for the current Git user.
   --base-branch NAME   Show commits in HEAD that are not in this base branch.
-  --json               Print structured JSON and skip AI generation.
-  --no-ai              Print a local Rich text summary and skip AI generation.
-  --markdown           Print Markdown and skip AI generation.
+  --json               Print structured JSON (always raw; AI is ignored).
+  --no-ai              Skip AI and print a raw formatted summary.
+  --ai                 Force AI mode (default for text/markdown; ignored with --json).
+  --markdown           Print a Markdown summary (AI-polished unless --no-ai).
   --output, --out PATH Write JSON, Markdown, text, or AI output to a file.
   --api-key KEY        API key for AI summaries. Defaults to OPENAI_API_KEY.
   --provider NAME      Provider override or config provider name.

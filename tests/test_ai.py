@@ -20,3 +20,16 @@ def test_build_prompt_includes_budget_metadata() -> None:
     assert "TRUNCATION METADATA" in prompt
     assert json.dumps(metadata, indent=2) in prompt
     assert "avoid inferring details from omitted commits/files" in prompt
+
+
+def test_build_prompt_defaults_to_plain_text() -> None:
+    prompt = _build_prompt({"Alice": {}})
+
+    assert "Do NOT use Markdown syntax" in prompt
+
+
+def test_build_prompt_requests_markdown_when_asked() -> None:
+    prompt = _build_prompt({"Alice": {}}, output_format="markdown")
+
+    assert "Format the summary as Markdown" in prompt
+    assert "Do NOT use Markdown syntax" not in prompt

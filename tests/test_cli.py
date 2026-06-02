@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -126,7 +127,7 @@ def test_markdown_mode_prints_paste_ready_summary(
 ) -> None:
     monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
 
-    exit_code = cli.main(["--markdown"])
+    exit_code = cli.main(["--markdown", "--no-ai"])
 
     assert exit_code == 0
     output = capsys.readouterr().out
@@ -185,7 +186,7 @@ def test_markdown_mode_writes_to_output_file(
     monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
     output_path = tmp_path / "standup.md"
 
-    exit_code = cli.main(["--markdown", "--output", str(output_path)])
+    exit_code = cli.main(["--markdown", "--no-ai", "--output", str(output_path)])
 
     assert exit_code == 0
     assert capsys.readouterr().out == ""
@@ -544,13 +545,14 @@ def test_ai_mode_uses_codex_harness_from_config(
     assert captured["model"] == "gpt-5"
 
 
-def test_build_wizard_args_for_branch_markdown_report() -> None:
+def test_build_wizard_args_markdown_with_ai_omits_no_ai_flag() -> None:
     args = cli.build_wizard_args(
         {
             "repo": "../api",
             "preset": "branch",
             "base_branch": "develop",
             "format": "markdown",
+            "ai": True,
             "output": "standup.md",
         }
     )
@@ -566,17 +568,36 @@ def test_build_wizard_args_for_branch_markdown_report() -> None:
     ]
 
 
-def test_build_wizard_args_for_this_week_by_me_ai_report() -> None:
+def test_build_wizard_args_markdown_without_ai_adds_no_ai() -> None:
     args = cli.build_wizard_args(
-        {
-            "repo": ".",
-            "preset": "week",
-            "author": "me",
-            "format": "ai",
-        }
+        {"repo": ".", "preset": "week", "format": "markdown", "ai": False}
+    )
+
+    assert args == ["--days", "7", "--markdown", "--no-ai"]
+
+
+def test_build_wizard_args_text_with_ai_is_the_default_report() -> None:
+    args = cli.build_wizard_args(
+        {"repo": ".", "preset": "week", "author": "me", "format": "text", "ai": True}
     )
 
     assert args == ["--days", "7", "--author", "me"]
+
+
+def test_build_wizard_args_text_without_ai_adds_no_ai() -> None:
+    args = cli.build_wizard_args(
+        {"repo": ".", "preset": "week", "author": "me", "format": "text", "ai": False}
+    )
+
+    assert args == ["--days", "7", "--author", "me", "--no-ai"]
+
+
+def test_build_wizard_args_json_ignores_ai_toggle() -> None:
+    args = cli.build_wizard_args(
+        {"repo": ".", "preset": "today", "since": "2026-06-02", "format": "json", "ai": False}
+    )
+
+    assert args == ["--since", "2026-06-02", "--json"]
 
 
 def test_build_wizard_args_for_multiple_selected_authors() -> None:
@@ -585,28 +606,15 @@ def test_build_wizard_args_for_multiple_selected_authors() -> None:
             "repo": ".",
             "preset": "week",
             "authors": ["Alice", "Casey"],
-            "format": "ai",
+            "format": "text",
+            "ai": True,
         }
     )
 
     assert args == ["--days", "7", "--author", "Alice|Casey"]
 
 
-def test_build_wizard_args_for_today_everyone_ai_report() -> None:
-    args = cli.build_wizard_args(
-        {
-            "repo": ".",
-            "preset": "today",
-            "since": "2026-06-02",
-            "format": "ai",
-        }
-    )
-
-    assert args == ["--since", "2026-06-02"]
-
-
 def test_default_output_path_matches_output_style() -> None:
-    assert cli._default_output_path("ai") == "standup.txt"
     assert cli._default_output_path("text") == "standup.txt"
     assert cli._default_output_path("markdown") == "standup.md"
     assert cli._default_output_path("json") == "standup.json"
@@ -634,17 +642,21 @@ def test_numbered_choice_shows_plain_language_options(
     assert "2) This week - Last 7 days for the whole repo." in out
 
 
+_AI_AVAILABLE = {"cli_harnesses": [], "api_keys": [{"provider": "openai"}]}
+
+
 def test_run_wizard_uses_numbered_report_and_output_choices(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    answers = iter([".", "4", "1", "main", "2"])
+    answers = iter([".", "4", "1", "main", "1"])
     captured: dict[str, object] = {}
 
     def fake_ask(*_args: object, **_kwargs: object) -> str:
         return next(answers)
 
-    confirms = iter([False, True])
+    # Polish with AI? -> yes, Save? -> no, Run it now -> yes
+    confirms = iter([True, False, True])
 
     def fake_main(args: list[str]) -> int:
         captured["args"] = args
@@ -652,7 +664,7 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
-    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
     monkeypatch.setattr(cli, "main", fake_main)
 
     assert cli.run_wizard() == 0
@@ -663,17 +675,18 @@ def test_run_wizard_uses_numbered_report_and_output_choices(
     assert "Branch changes - Compare this branch against a base branch." in out
     assert "By who:" in out
     assert "Everyone - All contributors." in out
-    assert "Output style:" in out
-    assert "Markdown - Paste-ready Markdown for Slack, Notion, GitHub, or a file." in out
+    assert "Output format:" in out
+    assert "Markdown - Paste-ready for Slack, Notion, or GitHub." in out
 
 
-def test_run_wizard_asks_timeframe_then_author_and_defaults_to_ai(
+def test_run_wizard_asks_timeframe_then_author_then_format(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     prompts: list[tuple[str, dict[str, object]]] = []
-    answers = iter([".", "2", "2", "1"])
-    confirms = iter([False, False])
+    answers = iter([".", "2", "2", "2"])
+    # Polish with AI? -> yes, Save? -> no, Run it now -> no
+    confirms = iter([True, False, False])
 
     def fake_ask(message: str, **kwargs: object) -> str:
         prompts.append((message, kwargs))
@@ -681,7 +694,7 @@ def test_run_wizard_asks_timeframe_then_author_and_defaults_to_ai(
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
-    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
 
     assert cli.run_wizard() == 0
 
@@ -690,7 +703,7 @@ def test_run_wizard_asks_timeframe_then_author_and_defaults_to_ai(
         {"choices": ["1", "2", "3", "4"], "default": "2"},
     )
     assert prompts[2] == ("By who choice", {"choices": ["1", "2", "3"], "default": "1"})
-    assert prompts[3] == ("Output style choice", {"choices": ["1", "2", "3", "4"], "default": "1"})
+    assert prompts[3] == ("Output format choice", {"choices": ["1", "2", "3"], "default": "1"})
     out = capsys.readouterr().out
     assert "Review changes from:" in out
     assert "This week - Last 7 days." in out
@@ -704,8 +717,9 @@ def test_run_wizard_guides_file_saving(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     prompts: list[tuple[str, dict[str, object]]] = []
-    answers = iter([".", "2", "2", "1", "standup.txt"])
-    confirms = iter([True, False])
+    answers = iter([".", "2", "2", "2", "standup.txt"])
+    # Polish with AI? -> yes, Save? -> yes, Run it now -> no
+    confirms = iter([True, True, False])
 
     def fake_ask(message: str, **kwargs: object) -> str:
         prompts.append((message, kwargs))
@@ -713,7 +727,7 @@ def test_run_wizard_guides_file_saving(
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
-    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
 
     assert cli.run_wizard() == 0
 
@@ -721,7 +735,7 @@ def test_run_wizard_guides_file_saving(
     out = capsys.readouterr().out
     assert "This week - Last 7 days." in out
     assert "Me - Only commits authored by me." in out
-    assert "AI summary - Use your configured AI provider or CLI for a polished draft." in out
+    assert "Plain text - Simple terminal summary." in out
     assert "Generated command:\n  git-standup --days 7 --author me --output standup.txt" in out
 
 
@@ -729,8 +743,9 @@ def test_run_wizard_uses_multi_author_picker_for_someone_else(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    answers = iter([".", "2", "3", "1,3", "1"])
-    confirms = iter([False, True])
+    answers = iter([".", "2", "3", "1,3", "2"])
+    # Polish with AI? -> yes, Save? -> no, Run it now -> yes
+    confirms = iter([True, False, True])
     captured: dict[str, object] = {}
 
     def fake_main(args: list[str]) -> int:
@@ -739,7 +754,7 @@ def test_run_wizard_uses_multi_author_picker_for_someone_else(
 
     monkeypatch.setattr(cli.Prompt, "ask", lambda *_args, **_kwargs: next(answers))
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
-    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
     monkeypatch.setattr(cli, "_recent_authors", lambda _repo: ["Alice", "Bob", "Casey"])
     monkeypatch.setattr(cli, "main", fake_main)
 
@@ -765,3 +780,103 @@ def test_main_opens_wizard_for_bare_interactive_command(
     monkeypatch.setattr(cli, "run_wizard", lambda: 0)
 
     assert cli.main([]) == 0
+
+
+def test_markdown_with_ai_uses_ai_path_with_markdown_format(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+    captured: dict[str, object] = {}
+
+    def fake_generation(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "# AI markdown report"
+
+    monkeypatch.setattr(cli, "generate_standup", fake_generation)
+
+    assert cli.main(["--markdown"]) == 0
+
+    assert captured["output_format"] == "markdown"
+    assert "# AI markdown report" in capsys.readouterr().out
+
+
+def test_json_with_ai_flag_warns_and_stays_raw(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+
+    assert cli.main(["--json", "--ai"]) == 0
+
+    captured = capsys.readouterr()
+    assert "--ai has no effect with --json" in captured.err
+    assert json.loads(captured.out)["Alice"]["2026-03-10"]["stats"]["total_commits"] == 1
+
+
+def test_configure_ai_interactive_sets_key_and_saves(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    choices = iter(["provider", "openai"])
+    monkeypatch.setattr(cli, "_choice", lambda *_a, **_k: next(choices))
+    monkeypatch.setattr(cli.getpass, "getpass", lambda *_a, **_k: "sk-entered")
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    config = cli.configure_ai_interactive(config_file)
+
+    assert config is not None
+    assert config.provider == "openai"
+    assert os.environ["OPENAI_API_KEY"] == "sk-entered"
+    text = config_file.read_text(encoding="utf-8")
+    assert 'provider = "openai"' in text
+    assert "api_key" not in text  # secrets never written to config
+
+
+def test_maybe_offer_copy_copies_on_c_keypress(monkeypatch: pytest.MonkeyPatch) -> None:
+    copied: dict[str, object] = {}
+
+    class Tty:
+        def isatty(self) -> bool:
+            return True
+
+        def write(self, _text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli.sys, "stdout", Tty())
+    monkeypatch.setattr(cli, "clipboard_available", lambda: True)
+    monkeypatch.setattr(cli, "read_single_key", lambda: "c")
+    monkeypatch.setattr(
+        cli, "copy_to_clipboard", lambda content: copied.update(content=content) or True
+    )
+
+    cli._maybe_offer_copy("REPORT")
+
+    assert copied["content"] == "REPORT"
+
+
+def test_maybe_offer_copy_skips_when_not_a_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    called: dict[str, object] = {}
+
+    class NotTty:
+        def isatty(self) -> bool:
+            return False
+
+        def write(self, _text: str) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+    monkeypatch.setattr(cli.sys, "stdout", NotTty())
+    monkeypatch.setattr(cli, "copy_to_clipboard", lambda content: called.update(hit=True) or True)
+
+    cli._maybe_offer_copy("REPORT")
+
+    assert "hit" not in called
