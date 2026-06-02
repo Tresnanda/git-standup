@@ -1,6 +1,7 @@
 """CLI entry point for git-standup."""
 
 import argparse
+import getpass
 import importlib.metadata
 import json
 import os
@@ -19,7 +20,9 @@ from rich.prompt import Confirm, Prompt
 from git_standup import __version__
 from git_standup.ai import generate_standup, generate_standup_with_harness
 from git_standup.ai_env import PROVIDER_SPECS, detect_ai_environment, resolve_ai_connection
+from git_standup.clipboard import clipboard_available, copy_to_clipboard, read_single_key
 from git_standup.config import AIConfig, config_path, load_config, reset_config, save_config
+from git_standup.env_persist import persist_env_var
 from git_standup.formatter import (
     build_json_output,
     build_markdown_output,
@@ -162,6 +165,32 @@ def _write_output(text: str, output_path: str | None) -> bool:
         return False
     Path(output_path).write_text(text, encoding="utf-8")
     return True
+
+
+def _maybe_offer_copy(content: str) -> None:
+    """Offer to copy printed output to the clipboard (interactive TTY only)."""
+    if not sys.stdout.isatty() or not clipboard_available():
+        return
+    print("\nPress (c) to copy, or Enter to continue: ", end="", flush=True)
+    try:
+        key = read_single_key()
+    except (OSError, KeyboardInterrupt):
+        print()
+        return
+    print()
+    if key.lower() == "c":
+        if copy_to_clipboard(content):
+            print("Copied to clipboard ✓")
+        else:
+            print("Could not access the clipboard.")
+
+
+def _emit(content: str, output_path: str | None, printer) -> None:
+    """Write content to a file, or print it and offer a clipboard copy."""
+    if _write_output(content, output_path):
+        return
+    printer()
+    _maybe_offer_copy(content)
 
 
 def _pipx_binary() -> str | None:
@@ -416,11 +445,14 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
         args.extend(["--author", str(author)])
 
     output_format = str(answers.get("format") or "text")
-    if output_format == "markdown":
-        args.append("--markdown")
-    elif output_format == "json":
+    use_ai = bool(answers.get("ai", True))
+    if output_format == "json":
         args.append("--json")
-    elif output_format == "text":
+    elif output_format == "markdown":
+        args.append("--markdown")
+        if not use_ai:
+            args.append("--no-ai")
+    elif not use_ai:  # plain text without AI
         args.append("--no-ai")
 
     output = answers.get("output")
@@ -533,6 +565,108 @@ def _provider_defaults(provider: str) -> tuple[str, str]:
     raise ValueError(f"Unknown provider: {provider}")
 
 
+def _harness_defaults(harness: str) -> tuple[str, str]:
+    if harness == "ollama":
+        return "http://localhost:11434/v1", "llama3.1"
+    if harness == "lms":
+        return "http://localhost:1234/v1", "local-model"
+    return "", ""
+
+
+def _provider_key_env(provider: str) -> str:
+    """Return the environment variable name for a provider's API key."""
+    for spec in PROVIDER_SPECS:
+        if spec.provider == provider:
+            return spec.key_names[0]
+    return "OPENAI_API_KEY"
+
+
+def _prompt_api_key(provider: str) -> None:
+    """Prompt for an API key, set it for this run, and offer to persist it."""
+    key_name = _provider_key_env(provider)
+    key = getpass.getpass(f"{key_name} (hidden; leave blank to skip): ").strip()
+    if not key:
+        print(f"Skipped key entry. Set {key_name} in your environment to use AI mode.")
+        return
+    os.environ[key_name] = key
+    if Confirm.ask(f"Save {key_name} to your shell profile for future runs?", default=False):
+        target = persist_env_var(key_name, key)
+        if target == "setx":
+            print(f"Saved {key_name} via setx. Open a new terminal to load it.")
+        elif target:
+            print(f"Saved {key_name} to {target}. Restart your shell or run: source {target}")
+        else:
+            print(f"Could not persist {key_name}; it is set for this run only.")
+    else:
+        print(f"{key_name} is set for this run only. To persist it yourself, add:")
+        print(f'  export {key_name}="{key}"')
+
+
+def _ai_provider_available(ai_report: dict[str, Any]) -> bool:
+    """Return True when any AI provider, CLI harness, or saved config exists."""
+    if ai_report.get("api_keys") or ai_report.get("cli_harnesses"):
+        return True
+    try:
+        config = load_config(config_path())
+    except ValueError:
+        config = None
+    return bool(config and (config.provider or config.harness))
+
+
+def configure_ai_interactive(
+    path: Path,
+    *,
+    kind: str | None = None,
+    provider: str | None = None,
+    harness: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+    allow_key: bool = True,
+) -> AIConfig | None:
+    """Configure and persist an AI provider or CLI harness.
+
+    Prompts interactively for any value not supplied. When ``allow_key`` is set
+    and a provider is chosen, also prompts for an API key, exports it for the
+    current run, and offers to persist it. Returns the saved AIConfig.
+    """
+    if kind is None:
+        if harness:
+            kind = "cli"
+        elif provider:
+            kind = "provider"
+        else:
+            kind = _choice("Set up AI using", ["provider", "cli"], "provider")
+
+    if kind == "cli":
+        chosen = harness or _choice("CLI harness", ["codex", "ollama", "lms"], "codex")
+        default_base_url, default_model = _harness_defaults(chosen)
+        config = AIConfig(
+            harness=chosen,
+            base_url=base_url or default_base_url,
+            model=model or default_model,
+        )
+    else:
+        chosen = provider or _choice(
+            "Provider",
+            [spec.provider for spec in PROVIDER_SPECS] + ["custom"],
+            "openai",
+        )
+        default_base_url, default_model = _provider_defaults(chosen)
+        if chosen == "custom" and not base_url:
+            default_base_url = Prompt.ask("OpenAI-compatible base URL", default=default_base_url)
+        config = AIConfig(
+            provider=chosen,
+            base_url=base_url or default_base_url,
+            model=model or default_model,
+        )
+        if allow_key:
+            _prompt_api_key(chosen)
+
+    written = save_config(path, config)
+    print(f"Saved AI defaults to {written}")
+    return config
+
+
 def _print_config(config: AIConfig, path: Path) -> None:
     print(f"path: {path}")
     for field in ("provider", "base_url", "model", "harness"):
@@ -561,48 +695,30 @@ def run_config_command(args: argparse.Namespace) -> int:
         return 0
 
     if action == "set-provider":
-        provider = args.provider
-        if not provider:
-            provider = _choice(
-                "Provider",
-                [spec.provider for spec in PROVIDER_SPECS] + ["custom"],
-                "openai",
-            )
-        default_base_url, default_model = _provider_defaults(provider)
-        if provider == "custom" and not args.base_url:
-            default_base_url = Prompt.ask("OpenAI-compatible base URL", default=default_base_url)
-        config = AIConfig(
-            provider=provider,
-            base_url=args.base_url or default_base_url,
-            model=args.model or default_model,
+        configure_ai_interactive(
+            path,
+            kind="provider",
+            provider=args.provider,
+            base_url=args.base_url,
+            model=args.model,
+            allow_key=False,
         )
-        written = save_config(path, config)
-        print(f"Saved AI defaults to {written}")
         return 0
 
     if action == "set-cli":
-        harness = args.harness or _choice("CLI harness", ["codex", "ollama", "lms"], "codex")
-        default_model = ""
-        default_base_url = ""
-        if harness == "ollama":
-            default_model = "llama3.1"
-            default_base_url = "http://localhost:11434/v1"
-        elif harness == "lms":
-            default_model = "local-model"
-            default_base_url = "http://localhost:1234/v1"
-        config = AIConfig(
-            harness=harness,
-            base_url=args.base_url or default_base_url,
-            model=args.model or default_model,
+        configure_ai_interactive(
+            path,
+            kind="cli",
+            harness=args.harness,
+            base_url=args.base_url,
+            model=args.model,
+            allow_key=False,
         )
-        written = save_config(path, config)
-        print(f"Saved AI defaults to {written}")
         return 0
 
     if action == "interactive":
-        mode = _choice("Default type", ["provider", "cli"], "provider")
-        args.config_action = "set-cli" if mode == "cli" else "set-provider"
-        return run_config_command(args)
+        configure_ai_interactive(path, allow_key=False)
+        return 0
 
     print(f"Unknown config action: {action}", file=sys.stderr)
     return 2
@@ -649,23 +765,32 @@ def run_wizard() -> int:
         answers["days"] = Prompt.ask("Days of history", default="7")
 
     answers["format"] = _numbered_choice(
-        "Output style",
+        "Output format",
         [
-            (
-                "ai",
-                "AI summary",
-                "Use your configured AI provider or CLI for a polished draft.",
-            ),
-            (
-                "markdown",
-                "Markdown",
-                "Paste-ready Markdown for Slack, Notion, GitHub, or a file.",
-            ),
-            ("text", "Plain text", "Simple terminal summary without AI."),
-            ("json", "JSON", "Structured data for scripts, dashboards, or automation."),
+            ("markdown", "Markdown", "Paste-ready for Slack, Notion, or GitHub."),
+            ("text", "Plain text", "Simple terminal summary."),
+            ("json", "JSON", "Structured data for scripts or automation."),
         ],
-        "ai",
+        "markdown",
     )
+
+    if answers["format"] == "json":
+        answers["ai"] = False
+    elif _ai_provider_available(ai_report):
+        answers["ai"] = Confirm.ask("Polish with AI?", default=True)
+    else:
+        ai_choice = _numbered_choice(
+            "Polish with AI? No AI provider detected",
+            [
+                ("setup", "Set one up now", "Configure an AI provider or CLI."),
+                ("skip", "Skip AI", "Use raw output without AI."),
+            ],
+            "setup",
+        )
+        if ai_choice == "setup":
+            answers["ai"] = configure_ai_interactive(config_path()) is not None
+        else:
+            answers["ai"] = False
 
     if Confirm.ask("Save report to a file?", default=False):
         output_format = str(answers["format"])
@@ -697,8 +822,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --repo ../api       # Run against another repository\n"
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
         "  git-standup --author me         # My commits only\n"
-        "  git-standup --no-ai             # Text summary without LLM\n"
-        "  git-standup --markdown          # Markdown summary without LLM\n"
+        "  git-standup --no-ai             # Text summary without AI\n"
+        "  git-standup --markdown          # AI-polished Markdown summary\n"
+        "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
         "  git-standup --json              # Raw JSON output\n"
         "  git-standup --max-commits 20 --max-files-per-commit 10\n"
         "  git-standup --markdown --output standup.md\n"
@@ -773,12 +899,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-ai",
         action="store_true",
-        help="Output formatted text summary without AI",
+        help="Skip AI; output a raw formatted summary",
+    )
+    parser.add_argument(
+        "--ai",
+        action="store_true",
+        help="Force AI mode (default for text/markdown unless --no-ai; ignored with --json)",
     )
     parser.add_argument(
         "--markdown",
         action="store_true",
-        help="Output a paste-ready Markdown summary without AI",
+        help="Output a Markdown summary (AI-polished unless --no-ai)",
     )
     parser.add_argument(
         "--output", "--out",
@@ -918,20 +1049,31 @@ def main(argv: list[str] | None = None) -> int:
     commit_data = _build_commit_data(commits)
 
     if args.json:
+        if args.ai:
+            print(
+                "Warning: --ai has no effect with --json; JSON is always raw.",
+                file=sys.stderr,
+            )
         output = build_json_output(_with_budget_metadata(commit_data, budget_metadata))
-        if not _write_output(output + "\n", args.output):
-            print(output)
+        _emit(output + "\n", args.output, lambda: print(output))
         return 0
+
+    output_format = "markdown" if args.markdown else "text"
+
+    def _emit_raw() -> None:
+        """Emit the raw (non-AI) formatter output for the chosen format."""
+        if output_format == "markdown":
+            markdown = build_markdown_output(commit_data)
+            _emit(markdown, args.output, lambda: print(markdown, end=""))
+        else:
+            _emit(
+                build_text_output(commit_data),
+                args.output,
+                lambda: print_text_standup(commit_data),
+            )
 
     if args.no_ai:
-        if not _write_output(build_text_output(commit_data), args.output):
-            print_text_standup(commit_data)
-        return 0
-
-    if args.markdown:
-        output = build_markdown_output(commit_data)
-        if not _write_output(output, args.output):
-            print(output, end="")
+        _emit_raw()
         return 0
 
     # AI mode
@@ -955,6 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
                 harness=connection.provider,
                 model=connection.model,
                 budget_metadata=budget_metadata,
+                output_format=output_format,
             )
         else:
             standup_text = generate_standup(
@@ -963,19 +1106,18 @@ def main(argv: list[str] | None = None) -> int:
                 model=connection.model,
                 base_url=connection.base_url,
                 budget_metadata=budget_metadata,
+                output_format=output_format,
             )
     except RuntimeError as exc:
-        # Fall back to text summary if AI fails
+        # Fall back to the raw formatter for the chosen format if AI fails.
         print(
-            f"Warning: AI generation failed ({exc}). Showing text summary instead.\n",
+            f"Warning: AI generation failed ({exc}). Showing raw summary instead.\n",
             file=sys.stderr,
         )
-        if not _write_output(build_text_output(commit_data), args.output):
-            print_text_standup(commit_data)
+        _emit_raw()
         return 1
 
-    if not _write_output(standup_text.rstrip() + "\n", args.output):
-        print_ai_standup(standup_text)
+    _emit(standup_text.rstrip() + "\n", args.output, lambda: print_ai_standup(standup_text))
     return 0
 
 

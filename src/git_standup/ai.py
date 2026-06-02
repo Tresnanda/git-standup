@@ -12,10 +12,24 @@ import httpx
 _MAX_PROMPT_CHARS = 120_000
 
 
+def _format_instruction(output_format: str) -> str:
+    """Return the formatting directive for the requested output format."""
+    if output_format == "markdown":
+        return (
+            "Format the summary as Markdown: use `##` headings, bullet lists, and "
+            "`**bold**` for emphasis so it is paste-ready for Slack, Notion, or GitHub."
+        )
+    return (
+        "Write in plain text using short paragraphs or simple dash bullets. "
+        "Do NOT use Markdown syntax (no #, *, or backticks)."
+    )
+
+
 def _build_prompt(
     commit_data: dict[str, Any],
     style: str = "standup",
     budget_metadata: dict[str, Any] | None = None,
+    output_format: str = "text",
 ) -> str:
     """Build a structured prompt from commit data."""
     metadata_section = ""
@@ -36,7 +50,7 @@ includes the hash, date, subject, body, and files changed with
 insertions/deletions.
 
 Generate a natural-language standup summary in a professional, friendly tone.
-Use bullet points or short paragraphs. Include:
+{_format_instruction(output_format)} Include:
 - What work was done (organized by author/project area)
 - Notable changes or feature work
 - Bug fixes or maintenance
@@ -54,6 +68,7 @@ def generate_standup(
     model: str = "gpt-4o-mini",
     base_url: str | None = None,
     budget_metadata: dict[str, Any] | None = None,
+    output_format: str = "text",
 ) -> str:
     """Send commit data to an LLM and return a natural-language standup summary.
 
@@ -81,7 +96,9 @@ def generate_standup(
     url_base = base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
     url = f"{url_base.rstrip('/')}/chat/completions"
 
-    prompt = _build_prompt(commit_data, budget_metadata=budget_metadata)
+    prompt = _build_prompt(
+        commit_data, budget_metadata=budget_metadata, output_format=output_format
+    )
 
     # Truncate prompt if too long
     if len(prompt) > _MAX_PROMPT_CHARS:
@@ -134,13 +151,16 @@ def generate_standup_with_harness(
     harness: str,
     model: str = "",
     budget_metadata: dict[str, Any] | None = None,
+    output_format: str = "text",
 ) -> str:
     """Generate a standup summary with a local AI CLI harness."""
     if harness != "codex":
         raise RuntimeError(f"Unsupported AI CLI harness: {harness}")
 
     prompt = (
-        _build_prompt(commit_data, budget_metadata=budget_metadata)
+        _build_prompt(
+            commit_data, budget_metadata=budget_metadata, output_format=output_format
+        )
         + "\n\nReturn only the finished standup summary. Do not edit files or run commands."
     )
     command = [
