@@ -1281,6 +1281,27 @@ def test_raw_terminal_session_preserves_output_newline_mapping(
         os.close(secondary)
 
 
+def test_clone_remote_repo_does_not_use_blobless_filter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # A --filter=blob:none clone makes `git log --numstat` fetch every blob over
+    # the network on demand, which times out. The clone must fetch blobs upfront.
+    for which_result in ("/usr/bin/gh", None):
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(cli.shutil, "which", lambda _name: which_result)
+        monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+        cli._clone_remote_repo("owner/name", tmp_path)
+
+        assert "--filter=blob:none" not in captured["cmd"]
+
+
 def test_interactive_choice_collapses_to_summary_on_confirm(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -1023,10 +1023,12 @@ def _safe_repo_dir_name(repo: str) -> str:
 def _clone_remote_repo(repo: str, parent: Path) -> Path:
     target = parent / _safe_repo_dir_name(repo)
     gh = shutil.which("gh")
+    # Clone blobs upfront: `git log --numstat` diffs every commit, and a blobless
+    # (--filter=blob:none) clone would refetch each blob over the network on demand.
     if gh:
-        cmd = [gh, "repo", "clone", repo, str(target), "--", "--filter=blob:none"]
+        cmd = [gh, "repo", "clone", repo, str(target)]
     else:
-        cmd = ["git", "clone", "--filter=blob:none", _remote_repo_url(repo), str(target)]
+        cmd = ["git", "clone", _remote_repo_url(repo), str(target)]
     try:
         with _spinner(f"Cloning {_remote_repo_label(repo)}…"):
             subprocess.run(
