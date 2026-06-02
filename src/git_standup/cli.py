@@ -52,6 +52,10 @@ REPOSITORIES_KEY = "_repositories"
 _RAW_TERMINAL_FD: int | None = None
 
 
+class _WizardCancelled(Exception):
+    """Raised when the user cancels an interactive picker."""
+
+
 @dataclass
 class UpdateCheck:
     available: bool
@@ -697,7 +701,7 @@ def _interactive_choice(
             if key in {"\r", "\n"}:
                 return options[cursor][0]
             if key.lower() == "q":
-                return default
+                raise _WizardCancelled
             if key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
                 cursor = (cursor + 1) % len(options)
             elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
@@ -767,7 +771,7 @@ def _interactive_multi_select(
             if key in {"\r", "\n"}:
                 return [option for index, option in enumerate(options) if index in selected]
             if key.lower() == "q":
-                return []
+                raise _WizardCancelled
             if key.lower() == "a":
                 selected = set(range(len(options)))
             elif key in {" ", "\t"}:
@@ -1104,7 +1108,10 @@ def run_config_command(args: argparse.Namespace) -> int:
         return 0
 
     if action == "interactive":
-        configure_ai_interactive(path, allow_key=False)
+        try:
+            configure_ai_interactive(path, allow_key=False)
+        except _WizardCancelled:
+            print("Cancelled.")
         return 0
 
     print(f"Unknown config action: {action}", file=sys.stderr)
@@ -1113,107 +1120,110 @@ def run_config_command(args: argparse.Namespace) -> int:
 
 def run_wizard() -> int:
     """Interactive command builder for git-standup."""
-    repo_source = _numbered_choice(
-        "Repository source",
-        [
-            ("current", "Current directory", "Use this Git repository."),
-            ("other", "Other directory", "Choose a local Git repository path."),
-            ("remote", "Remote repository", "Pick one or more GitHub repositories."),
-        ],
-        "current",
-    )
-    repo = "."
-    remote_repos: list[str] = []
-    if repo_source == "other":
-        repo = Prompt.ask("Repository path", default=".")
-    elif repo_source == "remote":
-        remote_repos = _choose_remote_repositories()
-
-    preset = _numbered_choice(
-        "Review changes from",
-        [
-            ("today", "Today", "Changes since today began."),
-            ("week", "This week", "Last 7 days."),
-            ("custom", "Custom range", "Choose how many days to review."),
-            ("branch", "Branch changes", "Compare this branch against a base branch."),
-        ],
-        "week",
-    )
-    author_choice = _numbered_choice(
-        "By who",
-        [
-            ("all", "Everyone", "All contributors."),
-            ("me", "Me", "Only commits authored by me."),
-            ("custom", "Someone else", "Pick one or more authors."),
-        ],
-        "all",
-    )
-    ai_report = detect_ai_environment(os.environ)
-    answers: dict[str, object] = {
-        "repo": repo,
-        "preset": preset,
-    }
-    if remote_repos:
-        answers["remote_repos"] = remote_repos
-    if author_choice == "me":
-        answers["author"] = "me"
-    elif author_choice == "custom":
-        if remote_repos:
-            author = Prompt.ask("Author name or email", default="")
-            if author:
-                answers["author"] = author
-        else:
-            authors = _choose_authors(repo)
-            if authors:
-                answers["authors"] = authors
-    if ai_report["cli_harnesses"]:
-        print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))
-    if preset == "branch":
-        answers["base_branch"] = Prompt.ask("Base branch", default="main")
-    elif preset == "custom":
-        answers["days"] = Prompt.ask("Days of history", default="7")
-
-    answers["format"] = _numbered_choice(
-        "Output format",
-        [
-            ("markdown", "Markdown", "Paste-ready for Slack, Notion, or GitHub."),
-            ("text", "Plain text", "Simple terminal summary."),
-            ("json", "JSON", "Structured data for scripts or automation."),
-            (
-                "changelog",
-                "Changelog",
-                "Release-note Markdown grouped by conventional commit type.",
-            ),
-        ],
-        "markdown",
-    )
-
-    if answers["format"] in {"json", "changelog"}:
-        answers["ai"] = False
-    elif _ai_provider_available(ai_report):
-        answers["ai"] = _confirm("Polish with AI?", default=True)
-    else:
-        ai_choice = _numbered_choice(
-            "Polish with AI? No AI provider detected",
+    try:
+        repo_source = _numbered_choice(
+            "Repository source",
             [
-                ("setup", "Set one up now", "Configure an AI provider or CLI."),
-                ("skip", "Skip AI", "Use raw output without AI."),
+                ("current", "Current directory", "Use this Git repository."),
+                ("other", "Other directory", "Choose a local Git repository path."),
+                ("remote", "Remote repository", "Pick one or more GitHub repositories."),
             ],
-            "setup",
+            "current",
         )
-        if ai_choice == "setup":
-            answers["ai"] = configure_ai_interactive(config_path()) is not None
-        else:
+        repo = "."
+        remote_repos: list[str] = []
+        if repo_source == "other":
+            repo = Prompt.ask("Repository path", default=".")
+        elif repo_source == "remote":
+            remote_repos = _choose_remote_repositories()
+
+        preset = _numbered_choice(
+            "Review changes from",
+            [
+                ("today", "Today", "Changes since today began."),
+                ("week", "This week", "Last 7 days."),
+                ("custom", "Custom range", "Choose how many days to review."),
+                ("branch", "Branch changes", "Compare this branch against a base branch."),
+            ],
+            "week",
+        )
+        author_choice = _numbered_choice(
+            "By who",
+            [
+                ("all", "Everyone", "All contributors."),
+                ("me", "Me", "Only commits authored by me."),
+                ("custom", "Someone else", "Pick one or more authors."),
+            ],
+            "all",
+        )
+        ai_report = detect_ai_environment(os.environ)
+        answers: dict[str, object] = {
+            "repo": repo,
+            "preset": preset,
+        }
+        if remote_repos:
+            answers["remote_repos"] = remote_repos
+        if author_choice == "me":
+            answers["author"] = "me"
+        elif author_choice == "custom":
+            if remote_repos:
+                author = Prompt.ask("Author name or email", default="")
+                if author:
+                    answers["author"] = author
+            else:
+                authors = _choose_authors(repo)
+                if authors:
+                    answers["authors"] = authors
+        if ai_report["cli_harnesses"]:
+            print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))
+        if preset == "branch":
+            answers["base_branch"] = Prompt.ask("Base branch", default="main")
+        elif preset == "custom":
+            answers["days"] = Prompt.ask("Days of history", default="7")
+
+        answers["format"] = _numbered_choice(
+            "Output format",
+            [
+                ("markdown", "Markdown", "Paste-ready for Slack, Notion, or GitHub."),
+                ("text", "Plain text", "Simple terminal summary."),
+                ("json", "JSON", "Structured data for scripts or automation."),
+                (
+                    "changelog",
+                    "Changelog",
+                    "Release-note Markdown grouped by conventional commit type.",
+                ),
+            ],
+            "markdown",
+        )
+
+        if answers["format"] in {"json", "changelog"}:
             answers["ai"] = False
+        elif _ai_provider_available(ai_report):
+            answers["ai"] = _confirm("Polish with AI?", default=True)
+        else:
+            ai_choice = _numbered_choice(
+                "Polish with AI? No AI provider detected",
+                [
+                    ("setup", "Set one up now", "Configure an AI provider or CLI."),
+                    ("skip", "Skip AI", "Use raw output without AI."),
+                ],
+                "setup",
+            )
+            if ai_choice == "setup":
+                answers["ai"] = configure_ai_interactive(config_path()) is not None
+            else:
+                answers["ai"] = False
 
-    if _confirm("Save report to a file?", default=False):
-        output_format = str(answers["format"])
-        answers["output"] = Prompt.ask("Save as", default=_default_output_path(output_format))
+        if _confirm("Save report to a file?", default=False):
+            output_format = str(answers["format"])
+            answers["output"] = Prompt.ask("Save as", default=_default_output_path(output_format))
 
-    args = build_wizard_args(answers)
-    print(f"\nGenerated command:\n  {_format_command(args)}\n")
-    if _confirm("Run it now", default=True):
-        return main(args)
+        args = build_wizard_args(answers)
+        print(f"\nGenerated command:\n  {_format_command(args)}\n")
+        if _confirm("Run it now", default=True):
+            return main(args)
+    except _WizardCancelled:
+        print("Cancelled.")
     return 0
 
 
