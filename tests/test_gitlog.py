@@ -148,7 +148,7 @@ def test_get_commits_uses_repo_path_and_explicit_date_window(monkeypatch) -> Non
     assert calls[1][calls[1].index("-n") + 1] == "11"
 
 
-def test_get_commits_can_exclude_merge_commits(monkeypatch) -> None:
+def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
@@ -159,7 +159,20 @@ def test_get_commits_can_exclude_merge_commits(monkeypatch) -> None:
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    commits = get_commits(repo_path="/workspace/app", exclude_merges=True)
+    commits = get_commits(
+        repo_path="/workspace/app",
+        base_branch="main",
+        author="Alice",
+        since="2026-01-01",
+        exclude_merges=True,
+        pathspecs=["src", "tests/test_cli.py"],
+    )
 
     assert commits == []
-    assert "--no-merges" in calls[1]
+    log_cmd = calls[1]
+    assert log_cmd[:4] == ["git", "-C", "/workspace/app", "log"]
+    assert "main..HEAD" in log_cmd
+    assert "--author=Alice" in log_cmd
+    assert "--no-merges" in log_cmd
+    separator_index = log_cmd.index("--")
+    assert log_cmd[separator_index + 1 :] == ["src", "tests/test_cli.py"]

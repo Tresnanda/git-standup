@@ -121,6 +121,26 @@ def test_json_mode_includes_budget_metadata_when_limited(
     assert output_commits[0]["truncated"] == {"files": True, "files_omitted": 1}
 
 
+def test_json_mode_includes_pathspec_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return _sample_commits()
+
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(["--json", "--path", "src", "--pathspec", "tests"])
+
+    assert exit_code == 0
+    assert captured["pathspecs"] == ["src", "tests"]
+    output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"] == {"pathspecs": ["src", "tests"]}
+
+
 def test_markdown_mode_prints_paste_ready_summary(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -153,6 +173,8 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
             "2026-01-01",
             "--until",
             "2026-01-07",
+            "--path",
+            "src",
             "--exclude-merges",
             "--json",
         ]
@@ -162,6 +184,7 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
     assert captured["repo_path"] == "/workspace/app"
     assert captured["since"] == "2026-01-01"
     assert captured["until"] == "2026-01-07"
+    assert captured["pathspecs"] == ["src"]
     assert captured["exclude_merges"] is True
 
 
@@ -184,6 +207,9 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
     assert repo.repo == "../api"
     assert repo.markdown is True
     assert repo.output == "standup.md"
+
+    paths = cli.parse_args(["--path", "src", "--pathspec", "README.md"])
+    assert paths.pathspecs == ["src", "README.md"]
 
 
 def test_markdown_mode_writes_to_output_file(
