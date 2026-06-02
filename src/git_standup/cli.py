@@ -50,6 +50,8 @@ REPO_SPEC = f"git+{REPO_URL}"
 MIN_PYTHON = (3, 10)
 REPOSITORIES_KEY = "_repositories"
 _RAW_TERMINAL_FD: int | None = None
+_RAW_TERMINAL_COOKED: Any = None
+_ADD_CUSTOM_REPO_LABEL = "+ Add custom repo (URL or owner/name)…"
 
 
 class _WizardCancelled(Exception):
@@ -616,7 +618,7 @@ def _read_terminal_key_from_fd(fd: int) -> str:
 
 @contextmanager
 def _raw_terminal_session(enabled: bool):
-    global _RAW_TERMINAL_FD
+    global _RAW_TERMINAL_FD, _RAW_TERMINAL_COOKED
     if not enabled or not sys.stdin.isatty() or sys.platform.startswith("win"):
         yield
         return
@@ -631,13 +633,34 @@ def _raw_terminal_session(enabled: bool):
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     previous_fd = _RAW_TERMINAL_FD
+    previous_cooked = _RAW_TERMINAL_COOKED
     try:
         tty.setcbreak(fd)
         _RAW_TERMINAL_FD = fd
+        _RAW_TERMINAL_COOKED = old_settings
         yield
     finally:
         _RAW_TERMINAL_FD = previous_fd
+        _RAW_TERMINAL_COOKED = previous_cooked
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+@contextmanager
+def _suspended_raw_terminal():
+    """Temporarily restore cooked mode so a normal prompt can run mid-picker."""
+    fd = _RAW_TERMINAL_FD
+    if fd is None or _RAW_TERMINAL_COOKED is None:
+        yield
+        return
+
+    import termios
+    import tty
+
+    try:
+        termios.tcsetattr(fd, termios.TCSADRAIN, _RAW_TERMINAL_COOKED)
+        yield
+    finally:
+        tty.setcbreak(fd)
 
 
 def _move_cursor_up(lines: int) -> None:
@@ -647,6 +670,29 @@ def _move_cursor_up(lines: int) -> None:
 
 def _terminal_lines() -> int:
     return shutil.get_terminal_size((80, 24)).lines
+
+
+def _wizard_separator() -> None:
+    """Print a dim full-width rule between wizard steps."""
+    width = shutil.get_terminal_size((80, 24)).columns
+    Console().print("─" * width, style="dim")
+
+
+@contextmanager
+def _spinner(message: str):
+    """Show an animated spinner on a TTY, else print the message once."""
+    if sys.stdout.isatty():
+        with Console().status(message, spinner="dots"):
+            yield
+    else:
+        print(message)
+        yield
+
+
+def _collapse_summary(title: str, summary: str, rendered_lines: int) -> None:
+    """Erase a finished picker frame and leave a one-line summary behind."""
+    _move_cursor_up(rendered_lines)
+    print(f"{title}: \x1b[32m✓\x1b[0m {summary}")
 
 
 def _picker_window(cursor: int, option_count: int) -> tuple[int, int, bool]:
@@ -699,6 +745,7 @@ def _interactive_choice(
             render()
             key = key_reader()
             if key in {"\r", "\n"}:
+                _collapse_summary(title, options[cursor][1], rendered_lines)
                 return options[cursor][0]
             if key.lower() == "q":
                 raise _WizardCancelled
@@ -739,50 +786,80 @@ def _interactive_multi_select(
     options: list[str],
     *,
     key_reader=_read_terminal_key,
+    add_label: str | None = None,
+    add_prompt=None,
 ) -> list[str]:
-    if not options:
+    if not options and add_label is None:
         return []
 
+    # When an add action is offered it occupies row 0; the real options follow.
+    display: list[str] = ([add_label] if add_label else []) + list(options)
+    add_index = 0 if add_label else None
     selected: set[int] = set()
-    cursor = 0
+    cursor = 1 if add_label and len(display) > 1 else 0
     rendered_lines = 0
 
     def render() -> None:
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
-        start, end, paged = _picker_window(cursor, len(options))
+        start, end, paged = _picker_window(cursor, len(display))
         print(f"{title}:")
         print("Use Up/Down to move, Space selects, Enter confirms, a selects all, q cancels.")
         for index in range(start, end):
-            option = options[index]
             pointer = ">" if index == cursor else " "
-            mark = "[x]" if index in selected else "[ ]"
-            print(f"{pointer} {mark} {option}")
+            if index == add_index:
+                print(f"{pointer} {display[index]}")
+            else:
+                mark = "[x]" if index in selected else "[ ]"
+                print(f"{pointer} {mark} {display[index]}")
         footer_lines = 0
         if paged:
-            print(f"Showing {start + 1}-{end} of {len(options)}. Selected: {len(selected)}.")
+            print(f"Showing {start + 1}-{end} of {len(display)}. Selected: {len(selected)}.")
             footer_lines = 1
         rendered_lines = (end - start) + 2 + footer_lines
+
+    def chosen() -> list[str]:
+        return [display[index] for index in sorted(selected)]
+
+    def trigger_add() -> None:
+        nonlocal cursor, rendered_lines
+        _move_cursor_up(rendered_lines)
+        rendered_lines = 0
+        with _suspended_raw_terminal():
+            new_repos = add_prompt() if add_prompt else []
+        for repo in new_repos:
+            if repo not in display:
+                display.append(repo)
+                selected.add(len(display) - 1)
+                cursor = len(display) - 1
 
     with _raw_terminal_session(key_reader is _read_terminal_key):
         while True:
             render()
             key = key_reader()
+            on_add_row = add_index is not None and cursor == add_index
             if key in {"\r", "\n"}:
-                return [option for index, option in enumerate(options) if index in selected]
+                if on_add_row:
+                    trigger_add()
+                    continue
+                result = chosen()
+                _collapse_summary(title, ", ".join(result) if result else "none", rendered_lines)
+                return result
             if key.lower() == "q":
                 raise _WizardCancelled
             if key.lower() == "a":
-                selected = set(range(len(options)))
+                selected = {index for index in range(len(display)) if index != add_index}
             elif key in {" ", "\t"}:
-                if cursor in selected:
+                if on_add_row:
+                    trigger_add()
+                elif cursor in selected:
                     selected.remove(cursor)
                 else:
                     selected.add(cursor)
             elif key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
-                cursor = (cursor + 1) % len(options)
+                cursor = (cursor + 1) % len(display)
             elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
-                cursor = (cursor - 1) % len(options)
+                cursor = (cursor - 1) % len(display)
 
 
 def _recent_authors(repo: str) -> list[str]:
@@ -849,24 +926,31 @@ def _remote_repositories() -> list[str]:
     if not gh:
         return []
     try:
-        result = subprocess.run(
-            [gh, "repo", "list", "--limit", "100", "--json", "nameWithOwner"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=20,
-        )
+        with _spinner("Fetching your GitHub repositories…"):
+            result = subprocess.run(
+                [
+                    gh,
+                    "api",
+                    "user/repos?affiliation=owner,collaborator,organization_member&per_page=100",
+                    "--paginate",
+                    "--jq",
+                    ".[].full_name",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return []
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError:
-        return []
     repos: list[str] = []
-    for item in payload:
-        if isinstance(item, dict) and isinstance(item.get("nameWithOwner"), str):
-            repos.append(item["nameWithOwner"])
-    return repos
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        name = line.strip()
+        if name and name not in seen:
+            seen.add(name)
+            repos.append(name)
+    return sorted(repos, key=str.lower)
 
 
 def _parse_remote_repo_selection(raw: str, repos: list[str]) -> list[str]:
@@ -886,16 +970,29 @@ def _parse_remote_repo_selection(raw: str, repos: list[str]) -> list[str]:
     return selected
 
 
+def _prompt_custom_repos() -> list[str]:
+    raw = Prompt.ask("Custom repo (URL or owner/name, comma-separated)", default="")
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def _choose_remote_repositories() -> list[str]:
     repos = _remote_repositories()
     if repos:
         if sys.stdin.isatty() and sys.stdout.isatty():
-            return _interactive_multi_select("Choose remote repositories", repos)
+            return _interactive_multi_select(
+                "Choose remote repositories",
+                repos,
+                add_label=_ADD_CUSTOM_REPO_LABEL,
+                add_prompt=_prompt_custom_repos,
+            )
 
         print("\nChoose remote repositories:")
         for index, repo in enumerate(repos, start=1):
             print(f"  {index}) {repo}")
-        raw = Prompt.ask("Repository choices (comma-separated numbers or owner/name)", default="")
+        raw = Prompt.ask(
+            "Repository choices (comma-separated numbers, owner/name, or URL)",
+            default="",
+        )
         return _parse_remote_repo_selection(raw, repos)
 
     raw = Prompt.ask("Remote repositories (comma-separated owner/name or URL)", default="")
@@ -931,13 +1028,14 @@ def _clone_remote_repo(repo: str, parent: Path) -> Path:
     else:
         cmd = ["git", "clone", "--filter=blob:none", _remote_repo_url(repo), str(target)]
     try:
-        subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=120,
-        )
+        with _spinner(f"Cloning {_remote_repo_label(repo)}…"):
+            subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=120,
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"Could not clone remote repository {repo}") from exc
     return target
@@ -1137,6 +1235,7 @@ def run_wizard() -> int:
         elif repo_source == "remote":
             remote_repos = _choose_remote_repositories()
 
+        _wizard_separator()
         preset = _numbered_choice(
             "Review changes from",
             [
@@ -1147,6 +1246,7 @@ def run_wizard() -> int:
             ],
             "week",
         )
+        _wizard_separator()
         author_choice = _numbered_choice(
             "By who",
             [
@@ -1181,6 +1281,7 @@ def run_wizard() -> int:
         elif preset == "custom":
             answers["days"] = Prompt.ask("Days of history", default="7")
 
+        _wizard_separator()
         answers["format"] = _numbered_choice(
             "Output format",
             [
@@ -1196,6 +1297,7 @@ def run_wizard() -> int:
             "markdown",
         )
 
+        _wizard_separator()
         if answers["format"] in {"json", "changelog"}:
             answers["ai"] = False
         elif _ai_provider_available(ai_report):
@@ -1214,12 +1316,14 @@ def run_wizard() -> int:
             else:
                 answers["ai"] = False
 
+        _wizard_separator()
         if _confirm("Save report to a file?", default=False):
             output_format = str(answers["format"])
             answers["output"] = Prompt.ask("Save as", default=_default_output_path(output_format))
 
         args = build_wizard_args(answers)
-        print(f"\nGenerated command:\n  {_format_command(args)}\n")
+        _wizard_separator()
+        print(f"Generated command:\n  {_format_command(args)}\n")
         if _confirm("Run it now", default=True):
             return main(args)
     except _WizardCancelled:
@@ -1609,23 +1713,24 @@ def main(argv: list[str] | None = None) -> int:
         provider_arg=args.provider,
     )
     try:
-        if connection.provider == "codex":
-            standup_text = generate_standup_with_harness(
-                commit_data=commit_data,
-                harness=connection.provider,
-                model=connection.model,
-                budget_metadata=budget_metadata,
-                output_format=output_format,
-            )
-        else:
-            standup_text = generate_standup(
-                commit_data=commit_data,
-                api_key=connection.api_key,
-                model=connection.model,
-                base_url=connection.base_url,
-                budget_metadata=budget_metadata,
-                output_format=output_format,
-            )
+        with _spinner("Polishing with AI…"):
+            if connection.provider == "codex":
+                standup_text = generate_standup_with_harness(
+                    commit_data=commit_data,
+                    harness=connection.provider,
+                    model=connection.model,
+                    budget_metadata=budget_metadata,
+                    output_format=output_format,
+                )
+            else:
+                standup_text = generate_standup(
+                    commit_data=commit_data,
+                    api_key=connection.api_key,
+                    model=connection.model,
+                    base_url=connection.base_url,
+                    budget_metadata=budget_metadata,
+                    output_format=output_format,
+                )
     except RuntimeError as exc:
         # Fall back to the raw formatter for the chosen format if AI fails.
         print(

@@ -1281,6 +1281,140 @@ def test_raw_terminal_session_preserves_output_newline_mapping(
         os.close(secondary)
 
 
+def test_interactive_choice_collapses_to_summary_on_confirm(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter(["\x1b[B", "\r"])
+
+    cli._interactive_choice(
+        "Output format",
+        [
+            ("markdown", "Markdown", "Paste-ready Markdown."),
+            ("text", "Plain text", "Simple terminal summary."),
+        ],
+        "markdown",
+        key_reader=lambda: next(keys),
+    )
+
+    out = capsys.readouterr().out
+    assert "Output format: \x1b[32m✓\x1b[0m Plain text" in out
+
+
+def test_multi_select_collapses_to_summary_on_confirm(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter([" ", "\x1b[B", " ", "\r"])
+
+    cli._interactive_multi_select(
+        "Choose authors",
+        ["Kevin", "YusufRehan", "Treshnanda"],
+        key_reader=lambda: next(keys),
+    )
+
+    out = capsys.readouterr().out
+    assert "Choose authors: \x1b[32m✓\x1b[0m Kevin, YusufRehan" in out
+
+
+def test_multi_select_empty_selection_summary_says_none(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._interactive_multi_select(
+        "Choose authors",
+        ["Kevin"],
+        key_reader=lambda: "\r",
+    )
+
+    assert "Choose authors: \x1b[32m✓\x1b[0m none" in capsys.readouterr().out
+
+
+def test_multi_select_add_row_prompts_and_appends_custom_entry() -> None:
+    # Up to the add row (cursor starts on the first real repo), Enter to add, Enter to confirm.
+    keys = iter(["\x1b[A", "\r", "\r"])
+
+    selected = cli._interactive_multi_select(
+        "Choose remote repositories",
+        ["me/api", "me/web"],
+        key_reader=lambda: next(keys),
+        add_label=cli._ADD_CUSTOM_REPO_LABEL,
+        add_prompt=lambda: ["owner/custom"],
+    )
+
+    assert selected == ["owner/custom"]
+
+
+def test_multi_select_add_row_shown_without_checkbox(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cli._interactive_multi_select(
+        "Choose remote repositories",
+        ["me/api"],
+        key_reader=lambda: "\r",
+        add_label=cli._ADD_CUSTOM_REPO_LABEL,
+        add_prompt=lambda: [],
+    )
+
+    out = capsys.readouterr().out
+    assert cli._ADD_CUSTOM_REPO_LABEL in out
+    assert f"[ ] {cli._ADD_CUSTOM_REPO_LABEL}" not in out
+
+
+def test_remote_repositories_lists_owner_and_collaborator_repos(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return types.SimpleNamespace(
+            stdout="me/web\norg/api\nme/web\nme/api\n",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    repos = cli._remote_repositories()
+
+    assert repos == ["me/api", "me/web", "org/api"]
+    assert "affiliation=owner,collaborator,organization_member" in " ".join(captured["cmd"])
+
+
+def test_remote_repositories_returns_empty_without_gh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+    assert cli._remote_repositories() == []
+
+
+def test_wizard_separator_prints_full_width_rule(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        cli.shutil,
+        "get_terminal_size",
+        lambda _fallback=(80, 24): os.terminal_size((40, 24)),
+    )
+
+    cli._wizard_separator()
+
+    assert "─" * 40 in capsys.readouterr().out
+
+
+def test_spinner_prints_message_once_when_not_a_tty(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: False, raising=False)
+
+    ran = False
+    with cli._spinner("Working…"):
+        ran = True
+
+    assert ran
+    assert "Working…" in capsys.readouterr().out
+
+
 def test_main_opens_wizard_for_bare_interactive_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
