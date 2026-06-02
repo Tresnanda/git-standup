@@ -1093,6 +1093,11 @@ def _prompt_api_key(provider: str) -> None:
         print(f'  export {key_name}="{key}"')
 
 
+def _prompt_model(default_model: str) -> str:
+    """Ask which model to use, prefilling the provider/harness default."""
+    return Prompt.ask("Model", default=default_model).strip()
+
+
 def _ai_provider_available(ai_report: dict[str, Any]) -> bool:
     """Return True when any AI provider, CLI harness, or saved config exists."""
     if ai_report.get("api_keys") or ai_report.get("cli_harnesses"):
@@ -1129,14 +1134,16 @@ def configure_ai_interactive(
             kind = _choice("Set up AI using", ["provider", "cli"], "provider")
 
     if kind == "cli":
+        prompted = harness is None
         chosen = harness or _choice("CLI harness", ["codex", "ollama", "lms"], "codex")
         default_base_url, default_model = _harness_defaults(chosen)
         config = AIConfig(
             harness=chosen,
             base_url=base_url or default_base_url,
-            model=model or default_model,
+            model=model or (_prompt_model(default_model) if prompted else default_model),
         )
     else:
+        prompted = provider is None
         chosen = provider or _choice(
             "Provider",
             [spec.provider for spec in PROVIDER_SPECS] + ["custom"],
@@ -1148,7 +1155,7 @@ def configure_ai_interactive(
         config = AIConfig(
             provider=chosen,
             base_url=base_url or default_base_url,
-            model=model or default_model,
+            model=model or (_prompt_model(default_model) if prompted else default_model),
         )
         if allow_key:
             _prompt_api_key(chosen)
