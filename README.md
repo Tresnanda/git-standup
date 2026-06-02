@@ -64,11 +64,27 @@ Run from inside any Git repository:
 git-standup week
 ```
 
-On an interactive terminal, the bare command opens a guided command builder that asks for the repository, report preset, output format, and optional output file, then shows the generated command before running it:
+On an interactive terminal, the bare command opens a guided command builder with numbered choices for the report type and output style, then shows the generated command before running it:
 
 ```bash
 git-standup
 git-standup wizard
+```
+
+Example wizard choices:
+
+```text
+Report type:
+  1) This week - Last 7 days for the whole repo.
+  2) My commits - Only commits authored by me.
+  3) Branch changes - Compare this branch against a base branch.
+  4) Custom range - Choose days, dates, or author filters.
+
+Output style:
+  1) Plain text - Simple terminal summary without AI.
+  2) Markdown - Paste-ready Markdown for Slack, Notion, GitHub, or a file.
+  3) JSON - Structured data for scripts, dashboards, or automation.
+  4) AI summary - Use your configured AI provider or CLI for a polished draft.
 ```
 
 Update to the latest GitHub version at any time:

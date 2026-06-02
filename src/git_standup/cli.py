@@ -317,6 +317,25 @@ def _choice(message: str, choices: list[str], default: str) -> str:
     return Prompt.ask(message, choices=choices, default=default)
 
 
+def _numbered_choice(
+    message: str,
+    options: list[tuple[str, str, str]],
+    default: str,
+) -> str:
+    print(f"\n{message}:")
+    default_index = "1"
+    allowed: list[str] = []
+    for index, (value, label, description) in enumerate(options, start=1):
+        number = str(index)
+        allowed.append(number)
+        if value == default:
+            default_index = number
+        print(f"  {number}) {label} - {description}")
+
+    choice = Prompt.ask(f"{message} choice", choices=allowed, default=default_index)
+    return options[int(choice) - 1][0]
+
+
 def _format_command(args: list[str]) -> str:
     return "git-standup " + " ".join(shlex.quote(item) for item in args)
 
@@ -408,12 +427,38 @@ def run_config_command(args: argparse.Namespace) -> int:
 def run_wizard() -> int:
     """Interactive command builder for git-standup."""
     repo = Prompt.ask("Repository path", default=".")
-    preset = _choice("Report preset", ["me", "week", "branch", "custom"], "week")
+    preset = _numbered_choice(
+        "Report type",
+        [
+            ("week", "This week", "Last 7 days for the whole repo."),
+            ("me", "My commits", "Only commits authored by me."),
+            ("branch", "Branch changes", "Compare this branch against a base branch."),
+            ("custom", "Custom range", "Choose days, dates, or author filters."),
+        ],
+        "week",
+    )
     ai_report = detect_ai_environment(os.environ)
     answers: dict[str, object] = {
         "repo": repo,
         "preset": preset,
-        "format": _choice("Output format", ["text", "markdown", "json", "ai"], "text"),
+        "format": _numbered_choice(
+            "Output style",
+            [
+                ("text", "Plain text", "Simple terminal summary without AI."),
+                (
+                    "markdown",
+                    "Markdown",
+                    "Paste-ready Markdown for Slack, Notion, GitHub, or a file.",
+                ),
+                ("json", "JSON", "Structured data for scripts, dashboards, or automation."),
+                (
+                    "ai",
+                    "AI summary",
+                    "Use your configured AI provider or CLI for a polished draft.",
+                ),
+            ],
+            "text",
+        ),
     }
     if ai_report["cli_harnesses"]:
         print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))

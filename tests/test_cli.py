@@ -380,6 +380,57 @@ def test_build_wizard_args_for_branch_markdown_report() -> None:
     ]
 
 
+def test_numbered_choice_shows_plain_language_options(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_args, **_kwargs: "2")
+
+    selected = cli._numbered_choice(
+        "Report type",
+        [
+            ("me", "My commits", "Only commits authored by me."),
+            ("week", "This week", "Last 7 days for the whole repo."),
+        ],
+        "week",
+    )
+
+    assert selected == "week"
+    out = capsys.readouterr().out
+    assert "Report type:" in out
+    assert "1) My commits - Only commits authored by me." in out
+    assert "2) This week - Last 7 days for the whole repo." in out
+
+
+def test_run_wizard_uses_numbered_report_and_output_choices(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    answers = iter([".", "3", "2", "main", ""])
+    captured: dict[str, object] = {}
+
+    def fake_ask(*_args: object, **_kwargs: object) -> str:
+        return next(answers)
+
+    def fake_main(args: list[str]) -> int:
+        captured["args"] = args
+        return 0
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: {"cli_harnesses": []})
+    monkeypatch.setattr(cli, "main", fake_main)
+
+    assert cli.run_wizard() == 0
+
+    assert captured["args"] == ["--base-branch", "main", "--markdown"]
+    out = capsys.readouterr().out
+    assert "Report type:" in out
+    assert "Branch changes - Compare this branch against a base branch." in out
+    assert "Output style:" in out
+    assert "Markdown - Paste-ready Markdown for Slack, Notion, GitHub, or a file." in out
+
+
 def test_main_opens_wizard_for_bare_interactive_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
