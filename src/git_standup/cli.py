@@ -829,6 +829,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --path src --path tests  # Only commits touching paths\n"
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
         "  git-standup --author me         # My commits only\n"
+        "  git-standup --exclude-merges   # Hide merge commits\n"
         "  git-standup --no-ai             # Text summary without AI\n"
         "  git-standup --markdown          # AI-polished Markdown summary\n"
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
@@ -906,6 +907,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=_positive_int,
         default=None,
         help="Maximum changed files to include per commit in output and AI input",
+    )
+    parser.add_argument(
+        "--exclude-merges",
+        action="store_true",
+        help="Exclude merge commits from git history",
     )
     parser.add_argument(
         "--json",
@@ -1048,6 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
             since=args.since,
             until=args.until,
             max_commits=commit_fetch_limit,
+            exclude_merges=args.exclude_merges,
             pathspecs=args.pathspecs,
         )
     except RuntimeError as exc:

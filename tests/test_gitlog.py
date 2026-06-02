@@ -144,6 +144,7 @@ def test_get_commits_uses_repo_path_and_explicit_date_window(monkeypatch) -> Non
     assert calls[1][:4] == ["git", "-C", "/workspace/app", "log"]
     assert "--since=2026-01-01" in calls[1]
     assert "--until=2026-01-07" in calls[1]
+    assert "--no-merges" not in calls[1]
     assert calls[1][calls[1].index("-n") + 1] == "11"
 
 
@@ -163,6 +164,7 @@ def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
         base_branch="main",
         author="Alice",
         since="2026-01-01",
+        exclude_merges=True,
         pathspecs=["src", "tests/test_cli.py"],
     )
 
@@ -171,5 +173,6 @@ def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
     assert log_cmd[:4] == ["git", "-C", "/workspace/app", "log"]
     assert "main..HEAD" in log_cmd
     assert "--author=Alice" in log_cmd
+    assert "--no-merges" in log_cmd
     separator_index = log_cmd.index("--")
     assert log_cmd[separator_index + 1 :] == ["src", "tests/test_cli.py"]
