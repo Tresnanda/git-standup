@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -160,9 +160,13 @@ def _positive_int(value: str) -> int:
 
 
 def _date_string(value: str) -> str:
-    """Parse an ISO date string for exact report windows."""
-    if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
-        raise argparse.ArgumentTypeError("must use YYYY-MM-DD")
+    """Parse a Git-compatible date or timestamp for exact report windows."""
+    date_pattern = r"\d{4}-\d{2}-\d{2}"
+    timestamp_pattern = rf"{date_pattern} \d{{2}}:\d{{2}}:\d{{2}} [+-]\d{{4}}"
+    if not re.match(rf"^(?:{date_pattern}|{timestamp_pattern})$", value):
+        raise argparse.ArgumentTypeError(
+            "must use YYYY-MM-DD or YYYY-MM-DD HH:MM:SS +0000"
+        )
     return value
 
 
@@ -423,7 +427,7 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
 
     preset = str(answers.get("preset") or "week")
     if preset == "today":
-        args.extend(["--since", str(answers.get("since") or _today_string())])
+        args.extend(["--since", str(answers.get("since") or _today_start_string())])
     elif preset == "me":
         args.extend(["--author", "me"])
     elif preset == "me_week":
@@ -470,8 +474,10 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     return args
 
 
-def _today_string() -> str:
-    return date.today().isoformat()
+def _today_start_string(now: datetime | None = None) -> str:
+    current = now or datetime.now().astimezone()
+    today_start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    return today_start.strftime("%Y-%m-%d %H:%M:%S %z")
 
 
 def _default_output_path(output_format: str) -> str:
