@@ -8,7 +8,7 @@ from typing import Any
 
 _GITHUB_REMOTE_RE = re.compile(
     r"(?:git@github\.com:|https://github\.com/|ssh://git@github\.com/)"
-    r"(?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?/?$"
+    r"(?P<owner>[^/]+)/(?P<repo>[^/\s]+?)(?:\.git)?/?$"
 )
 _MERGE_PR_RE = re.compile(r"^Merge pull request #(?P<number>\d+)\b", re.IGNORECASE)
 _TRAILING_PR_RE = re.compile(r"\s*\(#(?P<number>\d+)\)\s*$")

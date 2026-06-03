@@ -18,6 +18,10 @@ def test_slug_from_github_remote_urls() -> None:
         _slug_from_remote_url("ssh://git@github.com/Tresnanda/git-standup.git")
         == "Tresnanda/git-standup"
     )
+    assert (
+        _slug_from_remote_url("https://github.com/Tresnanda/my.tool.git")
+        == "Tresnanda/my.tool"
+    )
     assert _slug_from_remote_url("https://example.com/Tresnanda/git-standup.git") is None
 
 
