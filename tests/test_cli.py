@@ -1414,7 +1414,7 @@ def test_wizard_separator_prints_full_width_rule(
     monkeypatch.setattr(
         cli.shutil,
         "get_terminal_size",
-        lambda _fallback=(80, 24): os.terminal_size((40, 24)),
+        lambda fallback=(80, 24): os.terminal_size((40, 24)),
     )
 
     cli._wizard_separator()
