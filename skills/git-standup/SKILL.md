@@ -100,6 +100,7 @@ git-standup --no-wizard --remote-repo owner/api --remote-repo owner/web --markdo
 - `--markdown`: best for GitHub, Slack, Notion, OSS updates, and PR notes.
 - `--no-ai`: use when the user wants raw local output or no network/API use.
 - `--json`: use for automation, scripts, dashboards, or agent parsing.
+- `--stats-only`: use for compact aggregate counts without per-commit details.
 - `--changelog`: use for release-note style Markdown grouped by conventional
   commit type.
 - `--output <file>`: use when the user wants the report saved.

@@ -11,6 +11,7 @@ Generate standup-ready summaries from Git history.
 - Shows file-level change stats in local text mode.
 - Exports structured JSON for automation and reporting.
 - Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
+- Prints aggregate-only stats for dashboards or quick check-ins with `--stats-only`.
 - Builds non-AI changelog Markdown for release notes with `--changelog`.
 - Can run against another repository path with `--repo`.
 - Can run against one or more GitHub repositories with repeatable `--remote-repo`.
@@ -182,6 +183,12 @@ Print AI-polished Markdown (or add `--no-ai` for a raw template):
 
 ```bash
 git-standup --markdown
+```
+
+Print aggregate stats without per-commit details:
+
+```bash
+git-standup --stats-only
 ```
 
 Generate release-note style changelog Markdown without AI:
