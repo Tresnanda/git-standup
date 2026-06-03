@@ -1,6 +1,6 @@
 import json
 
-from git_standup.ai import _build_prompt
+from git_standup.ai import _build_prompt, _chat_completions_url, _harness_command
 
 
 def test_build_prompt_includes_budget_metadata() -> None:
@@ -55,3 +55,62 @@ def test_build_prompt_warns_not_to_embellish_low_signal_commits() -> None:
     assert "Do not embellish weak git evidence" in prompt
     assert "When a commit has `quality.signal` set to `low`" in prompt
     assert "say the commit message was vague instead of" in prompt
+
+
+def test_chat_completions_url_supports_azure_deployment_urls(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-06-01")
+
+    url = _chat_completions_url(
+        "https://example.openai.azure.com/openai/deployments/standup-gpt"
+    )
+
+    assert (
+        url
+        == "https://example.openai.azure.com/openai/deployments/standup-gpt"
+        "/chat/completions?api-version=2024-06-01"
+    )
+
+
+def test_chat_completions_url_keeps_openai_compatible_base_url() -> None:
+    assert _chat_completions_url("https://api.openai.com/v1") == (
+        "https://api.openai.com/v1/chat/completions"
+    )
+
+
+def test_harness_command_builds_headless_invocations() -> None:
+    prompt = "Summarize commits"
+    prompt_file = "/tmp/git-standup-prompt.txt"
+
+    assert _harness_command(
+        harness="opencode",
+        model="qwen/code",
+        prompt=prompt,
+        prompt_file=prompt_file,
+    ) == ["opencode", "-p", prompt, "-q", "--model", "qwen/code"]
+    assert _harness_command(
+        harness="cursor-agent",
+        model="gpt-5.2",
+        prompt=prompt,
+        prompt_file=prompt_file,
+    ) == ["cursor-agent", "-p", "--output-format", "text", prompt, "--model", "gpt-5.2"]
+    assert _harness_command(
+        harness="aider",
+        model="",
+        prompt=prompt,
+        prompt_file=prompt_file,
+    ) == ["aider", "--message-file", prompt_file]
+    assert _harness_command(
+        harness="goose",
+        model="",
+        prompt=prompt,
+        prompt_file=prompt_file,
+    ) == [
+        "goose",
+        "run",
+        "--no-session",
+        "-i",
+        prompt_file,
+        "-q",
+        "--output-format",
+        "text",
+    ]

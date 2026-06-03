@@ -190,15 +190,32 @@ function Save-UserSecret($Name, $Value) {
     Write-Host "Open a new terminal before using it in another session."
 }
 
-function Save-CodexConfig {
+function Get-HarnessLabel($Harness) {
+    switch ($Harness) {
+        "codex" { return "Codex CLI" }
+        "cursor-agent" { return "Cursor Agent" }
+        "agent" { return "Cursor Agent" }
+        "opencode" { return "OpenCode" }
+        "gemini" { return "Gemini CLI" }
+        "aider" { return "Aider" }
+        "goose" { return "Goose" }
+        "copilot" { return "GitHub Copilot CLI" }
+        "kiro-cli" { return "Kiro CLI" }
+        "amp" { return "Amp" }
+        "ollama" { return "Ollama" }
+        "lms" { return "LM Studio" }
+    }
+}
+
+function Save-HarnessConfig($Harness) {
     $configDir = Join-Path $env:APPDATA $AppName
     New-Item -ItemType Directory -Force -Path $configDir *> $null
     $configPath = Join-Path $configDir "config.toml"
     @(
         "# $AppName AI defaults. Store API keys in environment variables, not here.",
-        "harness = `"codex`""
+        "harness = `"$Harness`""
     ) | Set-Content -Path $configPath -Encoding UTF8
-    Write-Host "[ok] Saved Codex as the AI default"
+    Write-Host "[ok] Saved $(Get-HarnessLabel $Harness) as the AI default"
 }
 
 function Save-ProviderConfig($Provider, $BaseUrl, $Model) {
@@ -306,42 +323,75 @@ function Ensure-ProviderKey($Provider) {
 
 function Get-DefaultAIChoice {
     if (Get-Command codex -ErrorAction SilentlyContinue) { return "1" }
-    if ($env:OPENAI_API_KEY) { return "2" }
-    if ($env:GEMINI_API_KEY -or $env:GOOGLE_API_KEY) { return "3" }
-    if ($env:OPENROUTER_API_KEY) { return "4" }
-    if ($env:GROQ_API_KEY) { return "5" }
-    if ($env:MISTRAL_API_KEY) { return "6" }
-    if ($env:TOGETHER_API_KEY) { return "7" }
-    if ($env:PERPLEXITY_API_KEY) { return "8" }
-    if ($env:XAI_API_KEY) { return "9" }
-    return "10"
+    if (Get-Command cursor-agent -ErrorAction SilentlyContinue) { return "2" }
+    if (Get-Command agent -ErrorAction SilentlyContinue) { return "3" }
+    if (Get-Command opencode -ErrorAction SilentlyContinue) { return "4" }
+    if (Get-Command gemini -ErrorAction SilentlyContinue) { return "5" }
+    if (Get-Command aider -ErrorAction SilentlyContinue) { return "6" }
+    if (Get-Command goose -ErrorAction SilentlyContinue) { return "7" }
+    if (Get-Command copilot -ErrorAction SilentlyContinue) { return "8" }
+    if (Get-Command kiro-cli -ErrorAction SilentlyContinue) { return "9" }
+    if (Get-Command amp -ErrorAction SilentlyContinue) { return "10" }
+    if (Get-Command ollama -ErrorAction SilentlyContinue) { return "11" }
+    if (Get-Command lms -ErrorAction SilentlyContinue) { return "12" }
+    if ($env:OPENAI_API_KEY) { return "13" }
+    if ($env:GEMINI_API_KEY -or $env:GOOGLE_API_KEY) { return "14" }
+    if ($env:OPENROUTER_API_KEY) { return "15" }
+    if ($env:GROQ_API_KEY) { return "16" }
+    if ($env:MISTRAL_API_KEY) { return "17" }
+    if ($env:TOGETHER_API_KEY) { return "18" }
+    if ($env:PERPLEXITY_API_KEY) { return "19" }
+    if ($env:XAI_API_KEY) { return "20" }
+    return "21"
 }
 
 function Setup-AIDefaults {
     if ($Yes) { return }
     Write-Host ""
     Write-Host "Choose AI default:"
-    Write-Host "1) Codex CLI - recommended if you use Codex"
-    Write-Host "2) $(Get-ProviderLabel "openai")"
-    Write-Host "3) $(Get-ProviderLabel "gemini")"
-    Write-Host "4) $(Get-ProviderLabel "openrouter")"
-    Write-Host "5) $(Get-ProviderLabel "groq")"
-    Write-Host "6) $(Get-ProviderLabel "mistral")"
-    Write-Host "7) $(Get-ProviderLabel "together")"
-    Write-Host "8) $(Get-ProviderLabel "perplexity")"
-    Write-Host "9) $(Get-ProviderLabel "xai")"
-    Write-Host "10) Skip AI setup"
+    Write-Host "1) $(Get-HarnessLabel "codex")"
+    Write-Host "2) $(Get-HarnessLabel "cursor-agent")"
+    Write-Host "3) $(Get-HarnessLabel "agent")"
+    Write-Host "4) $(Get-HarnessLabel "opencode")"
+    Write-Host "5) $(Get-HarnessLabel "gemini")"
+    Write-Host "6) $(Get-HarnessLabel "aider")"
+    Write-Host "7) $(Get-HarnessLabel "goose")"
+    Write-Host "8) $(Get-HarnessLabel "copilot")"
+    Write-Host "9) $(Get-HarnessLabel "kiro-cli")"
+    Write-Host "10) $(Get-HarnessLabel "amp")"
+    Write-Host "11) $(Get-HarnessLabel "ollama")"
+    Write-Host "12) $(Get-HarnessLabel "lms")"
+    Write-Host "13) $(Get-ProviderLabel "openai")"
+    Write-Host "14) $(Get-ProviderLabel "gemini")"
+    Write-Host "15) $(Get-ProviderLabel "openrouter")"
+    Write-Host "16) $(Get-ProviderLabel "groq")"
+    Write-Host "17) $(Get-ProviderLabel "mistral")"
+    Write-Host "18) $(Get-ProviderLabel "together")"
+    Write-Host "19) $(Get-ProviderLabel "perplexity")"
+    Write-Host "20) $(Get-ProviderLabel "xai")"
+    Write-Host "21) Skip AI setup"
     $choice = Read-Choice "Choice" (Get-DefaultAIChoice)
     switch ($choice) {
-        "1" { Save-CodexConfig }
-        "2" { Ensure-ProviderKey "openai"; Save-ProviderConfig "openai" (Get-ProviderBaseUrl "openai") (Get-ProviderModel "openai") }
-        "3" { Ensure-ProviderKey "gemini"; Save-ProviderConfig "gemini" (Get-ProviderBaseUrl "gemini") (Get-ProviderModel "gemini") }
-        "4" { Ensure-ProviderKey "openrouter"; Save-ProviderConfig "openrouter" (Get-ProviderBaseUrl "openrouter") (Get-ProviderModel "openrouter") }
-        "5" { Ensure-ProviderKey "groq"; Save-ProviderConfig "groq" (Get-ProviderBaseUrl "groq") (Get-ProviderModel "groq") }
-        "6" { Ensure-ProviderKey "mistral"; Save-ProviderConfig "mistral" (Get-ProviderBaseUrl "mistral") (Get-ProviderModel "mistral") }
-        "7" { Ensure-ProviderKey "together"; Save-ProviderConfig "together" (Get-ProviderBaseUrl "together") (Get-ProviderModel "together") }
-        "8" { Ensure-ProviderKey "perplexity"; Save-ProviderConfig "perplexity" (Get-ProviderBaseUrl "perplexity") (Get-ProviderModel "perplexity") }
-        "9" { Ensure-ProviderKey "xai"; Save-ProviderConfig "xai" (Get-ProviderBaseUrl "xai") (Get-ProviderModel "xai") }
+        "1" { Save-HarnessConfig "codex" }
+        "2" { Save-HarnessConfig "cursor-agent" }
+        "3" { Save-HarnessConfig "agent" }
+        "4" { Save-HarnessConfig "opencode" }
+        "5" { Save-HarnessConfig "gemini" }
+        "6" { Save-HarnessConfig "aider" }
+        "7" { Save-HarnessConfig "goose" }
+        "8" { Save-HarnessConfig "copilot" }
+        "9" { Save-HarnessConfig "kiro-cli" }
+        "10" { Save-HarnessConfig "amp" }
+        "11" { Save-HarnessConfig "ollama" }
+        "12" { Save-HarnessConfig "lms" }
+        "13" { Ensure-ProviderKey "openai"; Save-ProviderConfig "openai" (Get-ProviderBaseUrl "openai") (Get-ProviderModel "openai") }
+        "14" { Ensure-ProviderKey "gemini"; Save-ProviderConfig "gemini" (Get-ProviderBaseUrl "gemini") (Get-ProviderModel "gemini") }
+        "15" { Ensure-ProviderKey "openrouter"; Save-ProviderConfig "openrouter" (Get-ProviderBaseUrl "openrouter") (Get-ProviderModel "openrouter") }
+        "16" { Ensure-ProviderKey "groq"; Save-ProviderConfig "groq" (Get-ProviderBaseUrl "groq") (Get-ProviderModel "groq") }
+        "17" { Ensure-ProviderKey "mistral"; Save-ProviderConfig "mistral" (Get-ProviderBaseUrl "mistral") (Get-ProviderModel "mistral") }
+        "18" { Ensure-ProviderKey "together"; Save-ProviderConfig "together" (Get-ProviderBaseUrl "together") (Get-ProviderModel "together") }
+        "19" { Ensure-ProviderKey "perplexity"; Save-ProviderConfig "perplexity" (Get-ProviderBaseUrl "perplexity") (Get-ProviderModel "perplexity") }
+        "20" { Ensure-ProviderKey "xai"; Save-ProviderConfig "xai" (Get-ProviderBaseUrl "xai") (Get-ProviderModel "xai") }
         default { Write-Host "[info] Skipped AI setup. You can run: $AppName config" }
     }
 }

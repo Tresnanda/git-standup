@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from git_standup.ai_env import PROVIDER_SPECS
+from git_standup.ai_env import CLI_HARNESS_SPECS, PROVIDER_SPECS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,8 +39,12 @@ def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert 'reinstall "$APP_NAME" --python "$PYTHON"' in text
     assert 'install --python "$PYTHON" "$REPO_SPEC"' in text
     assert "Choose AI default:" in text
-    assert "1) Codex CLI" in text
-    for index, spec in enumerate(PROVIDER_SPECS, start=2):
+    for index, harness in enumerate(CLI_HARNESS_SPECS, start=1):
+        assert f'{harness.command}) echo "{harness.label}" ;;' in text
+        assert f'{index}) $(harness_label {harness.command})' in text
+        assert f'{index}) write_harness_config "{harness.command}"' in text
+    provider_start = len(CLI_HARNESS_SPECS) + 1
+    for index, spec in enumerate(PROVIDER_SPECS, start=provider_start):
         assert f'{spec.provider}) echo "{_provider_label(spec.provider)}" ;;' in text
         assert f'{index}) $(provider_label {spec.provider})' in text
         assert (
@@ -51,11 +55,11 @@ def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
             assert key_name in text
         assert spec.base_url in text
         assert spec.text_model in text
-    assert "10) Skip AI setup" in text
+    assert f"{provider_start + len(PROVIDER_SPECS)}) Skip AI setup" in text
     assert "Paste API key now" in text
     assert text.count("has_tty || return 0") >= 2
     assert "save_secret_to_shell_profile" in text
-    assert 'harness = "codex"' in text
+    assert 'printf \'harness = "%s"\\n\' "$harness"' in text
     assert "Run $APP_NAME wizard now?" not in text
     assert '"$APP_NAME" wizard' not in text
     assert "If $APP_NAME helps you, star the GitHub repo now?" in text
@@ -85,8 +89,12 @@ def test_windows_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert '"reinstall", $AppName, "--python", $Python' in text
     assert '"install", "--python", $Python, $RepoSpec' in text
     assert "Choose AI default:" in text
-    assert "1) Codex CLI" in text
-    for index, spec in enumerate(PROVIDER_SPECS, start=2):
+    for index, harness in enumerate(CLI_HARNESS_SPECS, start=1):
+        assert f'"{harness.command}" {{ return "{harness.label}" }}' in text
+        assert f'Write-Host "{index}) $(Get-HarnessLabel "{harness.command}")"' in text
+        assert f'"{index}" {{ Save-HarnessConfig "{harness.command}"' in text
+    provider_start = len(CLI_HARNESS_SPECS) + 1
+    for index, spec in enumerate(PROVIDER_SPECS, start=provider_start):
         assert f'"{spec.provider}" {{ return "{_provider_label(spec.provider)}" }}' in text
         assert f'Write-Host "{index}) $(Get-ProviderLabel "{spec.provider}")"' in text
         assert f'"{index}" {{ Ensure-ProviderKey "{spec.provider}";' in text
@@ -94,10 +102,10 @@ def test_windows_installer_uses_numbered_ai_setup_and_key_entry() -> None:
             assert key_name in text
         assert spec.base_url in text
         assert spec.text_model in text
-    assert "10) Skip AI setup" in text
+    assert f"{provider_start + len(PROVIDER_SPECS)}) Skip AI setup" in text
     assert "Paste API key now" in text
     assert "Save-UserSecret" in text
-    assert "harness = `\"codex`\"" in text
+    assert '"harness = `"$Harness`""' in text
     assert "Run $AppName wizard now?" not in text
     assert "& $AppName wizard" not in text
     assert "If $AppName helps you, star the GitHub repo now?" in text

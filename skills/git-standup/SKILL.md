@@ -123,17 +123,19 @@ content, preserve the raw Markdown.
 
 ## AI Usage
 
-git-standup can use OpenAI-compatible providers or local CLI harnesses. If the
-user has Codex CLI configured, prefer the saved Codex CLI harness when available
-instead of asking for a new API key.
+git-standup can use OpenAI-compatible providers or local CLI harnesses. Prefer
+the user's saved default when one exists. If no default exists, prefer a ready
+detected CLI harness before asking for a new API key.
 
-Supported saved harnesses are `codex`, `ollama`, and `lms`. Other detected tools
-such as `gh` or `opencode` should not be saved as AI harnesses unless
-git-standup adds explicit support for invoking them.
+Supported saved harnesses include `codex`, `cursor-agent`, `agent`, `opencode`,
+`gemini`, `aider`, `goose`, `copilot`, `kiro-cli`, `amp`, `ollama`, and `lms`.
+Other detected AI tools should not be saved unless git-standup has a tested
+headless adapter for them.
 
 OpenAI-compatible provider defaults should use the providers exposed by
-`git-standup config set-provider`. Azure OpenAI credentials are not a ready
-default unless git-standup adds explicit Azure endpoint/deployment support.
+`git-standup config set-provider`. Azure OpenAI is ready when
+`AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_DEPLOYMENT`
+are set.
 
 Useful setup command:
 
@@ -161,6 +163,8 @@ git-standup
 The wizard supports:
 
 - current directory, another local directory, or remote GitHub repositories
+- remote GitHub repositories grouped into owned, organization, and collaborator
+  tabs in interactive terminals
 - today, last 7 days, custom range, or branch comparison
 - everyone, current user, or selected authors
 - Markdown, plain text, JSON, or changelog output

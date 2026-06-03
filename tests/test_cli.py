@@ -25,9 +25,13 @@ def isolated_user_ai_settings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None
         "TOGETHER_API_KEY",
         "PERPLEXITY_API_KEY",
         "XAI_API_KEY",
-        "AZURE_OPENAI_API_KEY",
-        "AZURE_OPENAI_ENDPOINT",
-    ):
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_DEPLOYMENT",
+    "CURSOR_API_KEY",
+    "KIRO_API_KEY",
+    "AMP_API_KEY",
+):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -901,10 +905,9 @@ def test_config_set_cli_accepts_codex(
     assert 'model = "gpt-5"' in text
 
 
-def test_config_set_cli_rejects_detected_but_unsupported_tools(
+def test_config_set_cli_accepts_detected_builtin_harnesses(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
-    capsys,
 ) -> None:
     config_file = tmp_path / "config.toml"
     monkeypatch.setattr(cli, "config_path", lambda: config_file)
@@ -913,18 +916,16 @@ def test_config_set_cli_rejects_detected_but_unsupported_tools(
         "detect_ai_environment",
         lambda _env: {
             "api_keys": [],
-            "cli_harnesses": ["codex"],
-            "ai_tools": ["codex", "gh", "opencode"],
-            "unsupported_cli_tools": ["gh", "opencode"],
+            "cli_harnesses": ["codex", "opencode", "cursor-agent"],
+            "ai_tools": ["codex", "gh", "opencode", "cursor-agent"],
+            "unsupported_cli_tools": ["gh"],
         },
     )
 
-    assert cli.main(["config", "set-cli", "--harness", "opencode"]) == 2
+    assert cli.main(["config", "set-cli", "--harness", "opencode"]) == 0
 
-    captured = capsys.readouterr()
-    assert "Unsupported CLI harness: opencode" in captured.err
-    assert "Supported harnesses: codex, ollama, lms" in captured.err
-    assert not config_file.exists()
+    text = config_file.read_text(encoding="utf-8")
+    assert 'harness = "opencode"' in text
 
 
 def test_ai_mode_uses_codex_harness_from_config(
@@ -949,21 +950,26 @@ def test_ai_mode_uses_codex_harness_from_config(
     assert captured["model"] == "gpt-5"
 
 
-def test_ai_mode_rejects_stale_unsupported_harness_config(
+def test_ai_mode_uses_any_builtin_harness_from_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
-    capsys,
 ) -> None:
     config_file = tmp_path / "config.toml"
-    config_file.write_text('harness = "opencode"\n', encoding="utf-8")
+    config_file.write_text('harness = "opencode"\nmodel = "qwen/code"\n', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_generation(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "standup from opencode"
+
     monkeypatch.setattr(cli, "config_path", lambda: config_file)
     monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+    monkeypatch.setattr(cli, "generate_standup_with_harness", fake_generation)
 
-    assert cli.main([]) == 1
+    assert cli.main([]) == 0
 
-    captured = capsys.readouterr()
-    assert "Unsupported CLI harness: opencode" in captured.err
-    assert "Supported harnesses: codex, ollama, lms" in captured.err
+    assert captured["harness"] == "opencode"
+    assert captured["model"] == "qwen/code"
 
 
 def test_ai_provider_available_ignores_only_unsupported_credentials(
@@ -977,6 +983,19 @@ def test_ai_provider_available_ignores_only_unsupported_credentials(
             "unsupported_api_keys": [{"name": "AZURE_OPENAI_API_KEY"}],
             "cli_harnesses": [],
         }
+    )
+
+
+def test_ai_provider_available_accepts_detected_api_keys_and_harnesses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda _path: None)
+
+    assert cli._ai_provider_available(
+        {"api_keys": [{"provider": "azure-openai"}], "cli_harnesses": []}
+    )
+    assert cli._ai_provider_available(
+        {"api_keys": [], "cli_harnesses": ["cursor-agent"]}
     )
 
 
@@ -1186,8 +1205,12 @@ def test_run_wizard_starts_with_repository_source_and_remote_multi_select(
     monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
     monkeypatch.setattr(
         cli,
-        "_remote_repositories",
-        lambda: ["Tresnanda/api", "Tresnanda/web", "Tresnanda/docs"],
+        "_remote_repository_groups",
+        lambda: {
+            "Owned": ["Tresnanda/api", "Tresnanda/web"],
+            "Organizations": ["Tresnanda/docs"],
+            "Collaborator": [],
+        },
     )
 
     assert cli.run_wizard() == 0
@@ -1352,6 +1375,28 @@ def test_multi_select_scrolls_viewport_with_cursor(
     out = capsys.readouterr().out
     assert "> [ ] Tresnanda/repo-7" in out
     assert "Showing 4-9 of 20. Selected: 0." in out
+
+
+def test_tabbed_multi_select_uses_horizontal_arrows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter(["\x1b[C", " ", "\r"])
+
+    selected = cli._interactive_tabbed_multi_select(
+        "Choose remote repositories",
+        {
+            "Owned": ["me/api"],
+            "Organizations": ["org/web"],
+            "Collaborator": ["friend/tool"],
+        },
+        key_reader=lambda: next(keys),
+    )
+
+    assert selected == ["org/web"]
+    out = capsys.readouterr().out
+    assert "Tabs: Owned | [Organizations] | Collaborator" in out
+    assert "Use Left/Right to switch tabs" in out
+    assert "> [ ] org/web" in out
 
 
 def test_interactive_choice_uses_arrow_keys_to_select(
@@ -1587,14 +1632,18 @@ def test_multi_select_add_row_shown_without_checkbox(
 def test_remote_repositories_lists_owner_and_collaborator_repos(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
+    captured: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return types.SimpleNamespace(
-            stdout="me/web\norg/api\nme/web\nme/api\n",
-            returncode=0,
-        )
+        captured.append(cmd)
+        joined = " ".join(cmd)
+        if "affiliation=owner" in joined:
+            stdout = "me/web\nme/api\n"
+        elif "affiliation=organization_member" in joined:
+            stdout = "org/api\n"
+        else:
+            stdout = "me/web\n"
+        return types.SimpleNamespace(stdout=stdout, returncode=0)
 
     monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/bin/gh")
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
@@ -1602,7 +1651,39 @@ def test_remote_repositories_lists_owner_and_collaborator_repos(
     repos = cli._remote_repositories()
 
     assert repos == ["me/api", "me/web", "org/api"]
-    assert "affiliation=owner,collaborator,organization_member" in " ".join(captured["cmd"])
+    assert len(captured) == 3
+
+
+def test_remote_repository_groups_are_split_by_affiliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(cmd)
+        joined = " ".join(cmd)
+        if "affiliation=owner" in joined:
+            stdout = "me/api\nme/docs\n"
+        elif "affiliation=organization_member" in joined:
+            stdout = "org/web\n"
+        else:
+            stdout = "friend/tool\n"
+        return types.SimpleNamespace(stdout=stdout, returncode=0)
+
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    groups = cli._remote_repository_groups()
+
+    assert groups == {
+        "Owned": ["me/api", "me/docs"],
+        "Organizations": ["org/web"],
+        "Collaborator": ["friend/tool"],
+    }
+    assert len(captured) == 3
+    assert "affiliation=owner" in " ".join(captured[0])
+    assert "affiliation=organization_member" in " ".join(captured[1])
+    assert "affiliation=collaborator" in " ".join(captured[2])
 
 
 def test_remote_repositories_returns_empty_without_gh(

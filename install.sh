@@ -179,14 +179,32 @@ write_provider_config() {
   log "[ok] Saved AI default to $dir/config.toml"
 }
 
-write_codex_config() {
+harness_label() {
+  case "$1" in
+    codex) echo "Codex CLI" ;;
+    cursor-agent) echo "Cursor Agent" ;;
+    agent) echo "Cursor Agent" ;;
+    opencode) echo "OpenCode" ;;
+    gemini) echo "Gemini CLI" ;;
+    aider) echo "Aider" ;;
+    goose) echo "Goose" ;;
+    copilot) echo "GitHub Copilot CLI" ;;
+    kiro-cli) echo "Kiro CLI" ;;
+    amp) echo "Amp" ;;
+    ollama) echo "Ollama" ;;
+    lms) echo "LM Studio" ;;
+  esac
+}
+
+write_harness_config() {
+  harness="$1"
   dir="$(config_dir)"
   mkdir -p "$dir"
   {
     printf '# %s AI defaults. Store API keys in environment variables, not here.\n' "$APP_NAME"
-    printf 'harness = "codex"\n'
+    printf 'harness = "%s"\n' "$harness"
   } >"$dir/config.toml"
-  log "[ok] Saved Codex as the AI default"
+  log "[ok] Saved $(harness_label "$harness") as the AI default"
 }
 
 provider_label() {
@@ -281,15 +299,26 @@ ensure_provider_key() {
 
 default_ai_choice() {
   if command -v codex >/dev/null 2>&1; then echo "1"
-  elif [ -n "${OPENAI_API_KEY:-}" ]; then echo "2"
-  elif [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]; then echo "3"
-  elif [ -n "${OPENROUTER_API_KEY:-}" ]; then echo "4"
-  elif [ -n "${GROQ_API_KEY:-}" ]; then echo "5"
-  elif [ -n "${MISTRAL_API_KEY:-}" ]; then echo "6"
-  elif [ -n "${TOGETHER_API_KEY:-}" ]; then echo "7"
-  elif [ -n "${PERPLEXITY_API_KEY:-}" ]; then echo "8"
-  elif [ -n "${XAI_API_KEY:-}" ]; then echo "9"
-  else echo "10"
+  elif command -v cursor-agent >/dev/null 2>&1; then echo "2"
+  elif command -v agent >/dev/null 2>&1; then echo "3"
+  elif command -v opencode >/dev/null 2>&1; then echo "4"
+  elif command -v gemini >/dev/null 2>&1; then echo "5"
+  elif command -v aider >/dev/null 2>&1; then echo "6"
+  elif command -v goose >/dev/null 2>&1; then echo "7"
+  elif command -v copilot >/dev/null 2>&1; then echo "8"
+  elif command -v kiro-cli >/dev/null 2>&1; then echo "9"
+  elif command -v amp >/dev/null 2>&1; then echo "10"
+  elif command -v ollama >/dev/null 2>&1; then echo "11"
+  elif command -v lms >/dev/null 2>&1; then echo "12"
+  elif [ -n "${OPENAI_API_KEY:-}" ]; then echo "13"
+  elif [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]; then echo "14"
+  elif [ -n "${OPENROUTER_API_KEY:-}" ]; then echo "15"
+  elif [ -n "${GROQ_API_KEY:-}" ]; then echo "16"
+  elif [ -n "${MISTRAL_API_KEY:-}" ]; then echo "17"
+  elif [ -n "${TOGETHER_API_KEY:-}" ]; then echo "18"
+  elif [ -n "${PERPLEXITY_API_KEY:-}" ]; then echo "19"
+  elif [ -n "${XAI_API_KEY:-}" ]; then echo "20"
+  else echo "21"
   fi
 }
 
@@ -297,27 +326,49 @@ setup_ai_defaults() {
   has_tty || return 0
   log ""
   log "Choose AI default:"
-  log "1) Codex CLI - recommended if you use Codex"
-  log "2) $(provider_label openai)"
-  log "3) $(provider_label gemini)"
-  log "4) $(provider_label openrouter)"
-  log "5) $(provider_label groq)"
-  log "6) $(provider_label mistral)"
-  log "7) $(provider_label together)"
-  log "8) $(provider_label perplexity)"
-  log "9) $(provider_label xai)"
-  log "10) Skip AI setup"
+  log "1) $(harness_label codex)"
+  log "2) $(harness_label cursor-agent)"
+  log "3) $(harness_label agent)"
+  log "4) $(harness_label opencode)"
+  log "5) $(harness_label gemini)"
+  log "6) $(harness_label aider)"
+  log "7) $(harness_label goose)"
+  log "8) $(harness_label copilot)"
+  log "9) $(harness_label kiro-cli)"
+  log "10) $(harness_label amp)"
+  log "11) $(harness_label ollama)"
+  log "12) $(harness_label lms)"
+  log "13) $(provider_label openai)"
+  log "14) $(provider_label gemini)"
+  log "15) $(provider_label openrouter)"
+  log "16) $(provider_label groq)"
+  log "17) $(provider_label mistral)"
+  log "18) $(provider_label together)"
+  log "19) $(provider_label perplexity)"
+  log "20) $(provider_label xai)"
+  log "21) Skip AI setup"
   choice="$(ask_choice "Choice" "$(default_ai_choice)")"
   case "$choice" in
-    1) write_codex_config ;;
-    2) ensure_provider_key "openai"; write_provider_config "openai" "$(provider_base_url openai)" "$(provider_model openai)" ;;
-    3) ensure_provider_key "gemini"; write_provider_config "gemini" "$(provider_base_url gemini)" "$(provider_model gemini)" ;;
-    4) ensure_provider_key "openrouter"; write_provider_config "openrouter" "$(provider_base_url openrouter)" "$(provider_model openrouter)" ;;
-    5) ensure_provider_key "groq"; write_provider_config "groq" "$(provider_base_url groq)" "$(provider_model groq)" ;;
-    6) ensure_provider_key "mistral"; write_provider_config "mistral" "$(provider_base_url mistral)" "$(provider_model mistral)" ;;
-    7) ensure_provider_key "together"; write_provider_config "together" "$(provider_base_url together)" "$(provider_model together)" ;;
-    8) ensure_provider_key "perplexity"; write_provider_config "perplexity" "$(provider_base_url perplexity)" "$(provider_model perplexity)" ;;
-    9) ensure_provider_key "xai"; write_provider_config "xai" "$(provider_base_url xai)" "$(provider_model xai)" ;;
+    1) write_harness_config "codex" ;;
+    2) write_harness_config "cursor-agent" ;;
+    3) write_harness_config "agent" ;;
+    4) write_harness_config "opencode" ;;
+    5) write_harness_config "gemini" ;;
+    6) write_harness_config "aider" ;;
+    7) write_harness_config "goose" ;;
+    8) write_harness_config "copilot" ;;
+    9) write_harness_config "kiro-cli" ;;
+    10) write_harness_config "amp" ;;
+    11) write_harness_config "ollama" ;;
+    12) write_harness_config "lms" ;;
+    13) ensure_provider_key "openai"; write_provider_config "openai" "$(provider_base_url openai)" "$(provider_model openai)" ;;
+    14) ensure_provider_key "gemini"; write_provider_config "gemini" "$(provider_base_url gemini)" "$(provider_model gemini)" ;;
+    15) ensure_provider_key "openrouter"; write_provider_config "openrouter" "$(provider_base_url openrouter)" "$(provider_model openrouter)" ;;
+    16) ensure_provider_key "groq"; write_provider_config "groq" "$(provider_base_url groq)" "$(provider_model groq)" ;;
+    17) ensure_provider_key "mistral"; write_provider_config "mistral" "$(provider_base_url mistral)" "$(provider_model mistral)" ;;
+    18) ensure_provider_key "together"; write_provider_config "together" "$(provider_base_url together)" "$(provider_model together)" ;;
+    19) ensure_provider_key "perplexity"; write_provider_config "perplexity" "$(provider_base_url perplexity)" "$(provider_model perplexity)" ;;
+    20) ensure_provider_key "xai"; write_provider_config "xai" "$(provider_base_url xai)" "$(provider_model xai)" ;;
     *) log "[info] Skipped AI setup. You can run: $APP_NAME config" ;;
   esac
 }

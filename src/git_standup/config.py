@@ -11,7 +11,7 @@ from typing import Mapping
 APP_NAME = "git-standup"
 _ASSIGNMENT_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*\"(.*)\"\s*$")
 _SECRET_KEYS = {"api_key", "apikey", "key", "token", "secret", "password"}
-_ALLOWED_KEYS = {"provider", "base_url", "model", "harness"}
+_ALLOWED_KEYS = {"provider", "base_url", "model", "harness", "api_key_env"}
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class AIConfig:
     base_url: str = ""
     model: str = ""
     harness: str = ""
+    api_key_env: str = ""
 
 
 def config_path(
@@ -74,6 +75,7 @@ def parse_config_text(text: str) -> AIConfig:
         base_url=data.get("base_url", ""),
         model=data.get("model", ""),
         harness=data.get("harness", ""),
+        api_key_env=data.get("api_key_env", ""),
     )
 
 
@@ -82,7 +84,7 @@ def format_config(config: AIConfig) -> str:
     lines = [
         "# git-standup AI defaults. Store API keys in environment variables, not here.",
     ]
-    for key in ("provider", "base_url", "model", "harness"):
+    for key in ("provider", "base_url", "model", "harness", "api_key_env"):
         value = getattr(config, key)
         if value:
             lines.append(f'{key} = "{_escape(value)}"')
