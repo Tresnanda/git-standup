@@ -31,6 +31,19 @@ def test_detect_ai_environment_finds_keys_and_cli_harnesses() -> None:
     assert report["cli_harnesses"] == ["codex", "ollama"]
 
 
+def test_detect_ai_environment_separates_supported_harnesses_from_other_tools() -> None:
+    report = detect_ai_environment(
+        env={},
+        which=lambda command: f"/usr/bin/{command}"
+        if command in {"gh", "opencode", "codex"}
+        else None,
+    )
+
+    assert report["ai_tools"] == ["codex", "gh", "opencode"]
+    assert report["cli_harnesses"] == ["codex"]
+    assert report["unsupported_cli_tools"] == ["gh", "opencode"]
+
+
 def test_detect_ai_environment_only_reports_masked_keys() -> None:
     secret = "pasted-secret-token-12345"
 

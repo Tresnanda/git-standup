@@ -64,7 +64,18 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec("xai", ("XAI_API_KEY",), "https://api.x.ai/v1", "grok-3-mini"),
 )
 
-CLI_HARNESSES = ("openai", "gemini", "ollama", "lms", "gh", "vercel", "aider", "opencode", "codex")
+CONFIGURABLE_CLI_HARNESSES = ("codex", "ollama", "lms")
+DETECTABLE_AI_TOOLS = (
+    "openai",
+    "gemini",
+    "ollama",
+    "lms",
+    "gh",
+    "vercel",
+    "aider",
+    "opencode",
+    "codex",
+)
 LOCAL_ENDPOINTS = (
     "http://localhost:11434/v1",
     "http://localhost:1234/v1",
@@ -123,10 +134,15 @@ def detect_ai_environment(
     which: Callable[[str], str | None] = default_which,
 ) -> dict[str, object]:
     """Detect AI keys and local CLI harnesses without making paid API calls."""
-    harnesses = sorted(command for command in CLI_HARNESSES if which(command))
+    detected_tools = sorted(command for command in DETECTABLE_AI_TOOLS if which(command))
+    harnesses = [
+        command for command in CONFIGURABLE_CLI_HARNESSES if command in detected_tools
+    ]
     return {
         "api_keys": sorted(_iter_detected_keys(env), key=lambda item: str(item["name"])),
         "cli_harnesses": harnesses,
+        "ai_tools": detected_tools,
+        "unsupported_cli_tools": sorted(set(detected_tools) - set(harnesses)),
         "local_endpoints": list(LOCAL_ENDPOINTS),
     }
 
