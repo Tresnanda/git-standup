@@ -901,6 +901,32 @@ def test_config_set_cli_accepts_codex(
     assert 'model = "gpt-5"' in text
 
 
+def test_config_set_cli_rejects_detected_but_unsupported_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(cli, "config_path", lambda: config_file)
+    monkeypatch.setattr(
+        cli,
+        "detect_ai_environment",
+        lambda _env: {
+            "api_keys": [],
+            "cli_harnesses": ["codex"],
+            "ai_tools": ["codex", "gh", "opencode"],
+            "unsupported_cli_tools": ["gh", "opencode"],
+        },
+    )
+
+    assert cli.main(["config", "set-cli", "--harness", "opencode"]) == 2
+
+    captured = capsys.readouterr()
+    assert "Unsupported CLI harness: opencode" in captured.err
+    assert "Supported harnesses: codex, ollama, lms" in captured.err
+    assert not config_file.exists()
+
+
 def test_ai_mode_uses_codex_harness_from_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -921,6 +947,23 @@ def test_ai_mode_uses_codex_harness_from_config(
 
     assert captured["harness"] == "codex"
     assert captured["model"] == "gpt-5"
+
+
+def test_ai_mode_rejects_stale_unsupported_harness_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text('harness = "opencode"\n', encoding="utf-8")
+    monkeypatch.setattr(cli, "config_path", lambda: config_file)
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+
+    assert cli.main([]) == 1
+
+    captured = capsys.readouterr()
+    assert "Unsupported CLI harness: opencode" in captured.err
+    assert "Supported harnesses: codex, ollama, lms" in captured.err
 
 
 def test_build_wizard_args_markdown_with_ai_omits_no_ai_flag() -> None:

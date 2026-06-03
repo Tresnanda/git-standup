@@ -25,6 +25,7 @@ from rich.prompt import Confirm, Prompt
 from git_standup import __version__
 from git_standup.ai import generate_standup, generate_standup_with_harness
 from git_standup.ai_env import (
+    CONFIGURABLE_CLI_HARNESSES,
     PROVIDER_SPECS,
     detect_ai_environment,
     mask_secret,
@@ -1131,9 +1132,27 @@ def _prompt_model(default_model: str) -> str:
     return Prompt.ask("Model", default=default_model).strip()
 
 
+def _supported_harness_text() -> str:
+    return ", ".join(CONFIGURABLE_CLI_HARNESSES)
+
+
+def _detected_supported_harnesses(ai_report: dict[str, Any]) -> list[str]:
+    detected = ai_report.get("cli_harnesses") or []
+    if not isinstance(detected, list):
+        return []
+    return [str(item) for item in detected if str(item) in CONFIGURABLE_CLI_HARNESSES]
+
+
+def _unsupported_harness_message(harness: str) -> str:
+    return (
+        f"Unsupported CLI harness: {harness}. "
+        f"Supported harnesses: {_supported_harness_text()}."
+    )
+
+
 def _ai_provider_available(ai_report: dict[str, Any]) -> bool:
     """Return True when any AI provider, CLI harness, or saved config exists."""
-    if ai_report.get("api_keys") or ai_report.get("cli_harnesses"):
+    if ai_report.get("api_keys") or _detected_supported_harnesses(ai_report):
         return True
     try:
         config = load_config(config_path())
@@ -1168,7 +1187,24 @@ def configure_ai_interactive(
 
     if kind == "cli":
         prompted = harness is None
-        chosen = harness or _choice("CLI harness", ["codex", "ollama", "lms"], "codex")
+        ai_report = detect_ai_environment(os.environ)
+        detected = _detected_supported_harnesses(ai_report)
+        if detected:
+            print("Detected supported AI harnesses: " + ", ".join(detected))
+        if ai_report.get("unsupported_cli_tools"):
+            print(
+                "Detected other AI tools not supported as git-standup harnesses: "
+                + ", ".join(str(item) for item in ai_report["unsupported_cli_tools"])
+            )
+        default_harness = detected[0] if detected else CONFIGURABLE_CLI_HARNESSES[0]
+        chosen = harness or _choice(
+            "CLI harness",
+            list(CONFIGURABLE_CLI_HARNESSES),
+            default_harness,
+        )
+        if chosen not in CONFIGURABLE_CLI_HARNESSES:
+            print(_unsupported_harness_message(chosen), file=sys.stderr)
+            return None
         default_base_url, default_model = _harness_defaults(chosen)
         config = AIConfig(
             harness=chosen,
@@ -1237,7 +1273,7 @@ def run_config_command(args: argparse.Namespace) -> int:
         return 0
 
     if action == "set-cli":
-        configure_ai_interactive(
+        config = configure_ai_interactive(
             path,
             kind="cli",
             harness=args.harness,
@@ -1245,6 +1281,8 @@ def run_config_command(args: argparse.Namespace) -> int:
             model=args.model,
             allow_key=False,
         )
+        if config is None:
+            return 2
         return 0
 
     if action == "interactive":
@@ -1316,8 +1354,18 @@ def run_wizard() -> int:
                 authors = _choose_authors(repo)
                 if authors:
                     answers["authors"] = authors
-        if ai_report["cli_harnesses"]:
-            print("Detected AI CLIs: " + ", ".join(ai_report["cli_harnesses"]))
+        detected_supported = _detected_supported_harnesses(ai_report)
+        if detected_supported:
+            print(
+                "Detected supported AI harnesses: "
+                + ", ".join(detected_supported)
+            )
+        if ai_report.get("unsupported_cli_tools"):
+            print(
+                "Detected other AI tools: "
+                + ", ".join(str(item) for item in ai_report["unsupported_cli_tools"])
+                + " (not supported as git-standup AI harnesses yet)"
+            )
         if preset == "branch":
             answers["base_branch"] = Prompt.ask("Base branch", default="main")
         elif preset == "custom":
@@ -1555,7 +1603,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--harness",
         type=str,
         default=None,
-        help="CLI harness name for config set-cli, such as codex, ollama, or lms",
+        help=(
+            "Supported AI harness for config set-cli "
+            f"({', '.join(CONFIGURABLE_CLI_HARNESSES)})"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -1794,6 +1845,16 @@ def main(argv: list[str] | None = None) -> int:
         user_config = load_config(config_path())
     except ValueError as exc:
         print(f"Error: invalid AI config: {exc}", file=sys.stderr)
+        return 1
+    if (
+        user_config
+        and user_config.harness
+        and user_config.harness not in CONFIGURABLE_CLI_HARNESSES
+    ):
+        print(
+            f"Error: invalid AI config: {_unsupported_harness_message(user_config.harness)}",
+            file=sys.stderr,
+        )
         return 1
     connection = resolve_ai_connection(
         api_key_arg=args.api_key,

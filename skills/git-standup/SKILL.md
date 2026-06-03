@@ -127,6 +127,10 @@ git-standup can use OpenAI-compatible providers or local CLI harnesses. If the
 user has Codex CLI configured, prefer the saved Codex CLI harness when available
 instead of asking for a new API key.
 
+Supported saved harnesses are `codex`, `ollama`, and `lms`. Other detected tools
+such as `gh` or `opencode` should not be saved as AI harnesses unless
+git-standup adds explicit support for invoking them.
+
 Useful setup command:
 
 ```bash
