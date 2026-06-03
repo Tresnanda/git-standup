@@ -171,15 +171,16 @@ def get_commits(
         "%Y-%m-%dT%H:%M:%S"
     )
 
-    # Build the git log command
+    # Build the git log command. Use NUL-delimited pretty fields and numstat
+    # records so commit bodies and filenames containing line-marker-looking text,
+    # newlines, or tabs cannot confuse the parser. Git paths cannot contain NUL.
     fmt = (
-        "---COMMIT---%n"
-        "hash:%H%n"
-        "author:%an%n"
-        "email:%ae%n"
-        "date:%aI%n"
-        "subject:%s%n"
-        "body:%b"
+        "%x1e%H%x00"
+        "%an%x00"
+        "%ae%x00"
+        "%aI%x00"
+        "%s%x00"
+        "%b%x00"
     )
 
     cmd = [
@@ -187,6 +188,7 @@ def get_commits(
         "-C",
         repo_root,
         "log",
+        "-z",
         f"--since={since_arg}",
         f"--pretty=format:{fmt}",
         "--numstat",
@@ -218,12 +220,12 @@ def get_commits(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
             check=True,
             timeout=30,
         )
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"git log failed: {exc.stderr}") from exc
+        stderr = _decode_git_text(exc.stderr).strip()
+        raise RuntimeError(f"git log failed: {stderr}") from exc
 
     return _parse_log_output(result.stdout)
 
@@ -247,62 +249,103 @@ def _get_current_user(repo_root: str | None = None) -> str:
         return ""
 
 
-def _parse_log_output(raw: str) -> list[dict[str, Any]]:
-    """Parse git log --numstat output into structured commit dicts."""
+def _decode_git_text(raw: bytes | str | None) -> str:
+    """Decode git output while preserving arbitrary path bytes where possible."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _parse_log_output(raw: bytes | str) -> list[dict[str, Any]]:
+    """Parse NUL-delimited git log --numstat output into structured commits."""
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "surrogateescape")
+
     commits: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    current_files: list[dict[str, Any]] = []
-    reading_body = False
-    body_lines: list[str] = []
+    tokens = raw.split(b"\x00")
+    index = 0
 
-    for line in raw.splitlines():
-        if line == "---COMMIT---":
-            if current is not None:
-                current["body"] = "\n".join(body_lines).strip()
-                current["files"] = _aggregate_files(current_files)
-                commits.append(current)
-            current = {}
-            current_files = []
-            reading_body = False
-            body_lines = []
-        elif current is not None:
-            if line.startswith("hash:"):
-                current["hash"] = line[5:].strip()
-            elif line.startswith("author:"):
-                current["author_name"] = line[7:].strip()
-            elif line.startswith("email:"):
-                current["author_email"] = line[6:].strip()
-            elif line.startswith("date:"):
-                current["date"] = line[5:].strip()
-            elif line.startswith("subject:"):
-                current["subject"] = line[8:].strip()
-            elif line.startswith("body:"):
-                reading_body = True
-                body_lines = [line[5:].strip()] if line[5:].strip() else []
-            elif re.match(r"^(?:\d+|-)\s+(?:\d+|-)\s+\S", line):
-                reading_body = False
-                # numstat line: insertions deletions filepath
-                parts = line.split("\t")
-                if len(parts) == 3:
-                    insertions = 0 if parts[0] == "-" else int(parts[0])
-                    deletions = 0 if parts[1] == "-" else int(parts[1])
-                    current_files.append(
-                        {
-                            "path": parts[2] if parts[2] != "-" else "unknown",
-                            "insertions": insertions,
-                            "deletions": deletions,
-                        }
-                    )
-            elif reading_body:
-                body_lines.append(line)
+    while index < len(tokens):
+        token = tokens[index]
+        if not token:
+            index += 1
+            continue
+        if not token.startswith(b"\x1e"):
+            index += 1
+            continue
+        if index + 5 >= len(tokens):
+            break
 
-    # Don't forget the last commit
-    if current is not None:
-        current["body"] = "\n".join(body_lines).strip()
+        current: dict[str, Any] = {
+            "hash": _decode_git_text(token[1:]).strip(),
+            "author_name": _decode_git_text(tokens[index + 1]).strip(),
+            "author_email": _decode_git_text(tokens[index + 2]).strip(),
+            "date": _decode_git_text(tokens[index + 3]).strip(),
+            "subject": _decode_git_text(tokens[index + 4]).strip(),
+            "body": _decode_git_text(tokens[index + 5]).strip(),
+        }
+        index += 6
+
+        current_files: list[dict[str, Any]] = []
+        while index < len(tokens):
+            token = tokens[index]
+            if token.startswith(b"\x1e"):
+                break
+            if not token:
+                index += 1
+                continue
+            file_stat, index = _parse_numstat_token(tokens, index)
+            if file_stat is not None:
+                current_files.append(file_stat)
+
         current["files"] = _aggregate_files(current_files)
         commits.append(current)
 
     return commits
+
+
+def _parse_numstat_token(
+    tokens: list[bytes],
+    index: int,
+) -> tuple[dict[str, Any] | None, int]:
+    """Parse one NUL-delimited --numstat record and return the next token index."""
+    token = tokens[index]
+    if token.startswith(b"\n"):
+        token = token[1:]
+
+    parts = token.split(b"\t", 2)
+    if len(parts) != 3:
+        return None, index + 1
+
+    try:
+        insertions = _parse_numstat_count(parts[0])
+        deletions = _parse_numstat_count(parts[1])
+    except ValueError:
+        return None, index + 1
+
+    path_token = parts[2]
+    next_index = index + 1
+    if path_token == b"" and index + 2 < len(tokens):
+        old_path = _decode_git_text(tokens[index + 1])
+        new_path = _decode_git_text(tokens[index + 2])
+        path = f"{old_path} => {new_path}"
+        next_index = index + 3
+    else:
+        path = _decode_git_text(path_token)
+
+    return {
+        "path": path if path != "-" else "unknown",
+        "insertions": insertions,
+        "deletions": deletions,
+    }, next_index
+
+
+def _parse_numstat_count(raw: bytes) -> int:
+    if raw == b"-":
+        return 0
+    return int(raw)
 
 
 def _aggregate_files(
