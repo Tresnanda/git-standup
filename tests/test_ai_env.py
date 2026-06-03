@@ -31,6 +31,15 @@ def test_detect_ai_environment_finds_keys_and_cli_harnesses() -> None:
     assert report["cli_harnesses"] == ["codex", "ollama"]
 
 
+def test_detect_ai_environment_only_reports_masked_keys() -> None:
+    secret = "pasted-secret-token-12345"
+
+    report = detect_ai_environment(env={"OPENAI_API_KEY": secret}, which=lambda _command: None)
+
+    assert report["api_keys"][0]["masked"] == mask_secret(secret)
+    assert secret not in repr(report)
+
+
 def test_resolve_ai_connection_prefers_explicit_values() -> None:
     connection = resolve_ai_connection(
         api_key_arg="explicit-key",

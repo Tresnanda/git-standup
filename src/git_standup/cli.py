@@ -24,7 +24,12 @@ from rich.prompt import Confirm, Prompt
 
 from git_standup import __version__
 from git_standup.ai import generate_standup, generate_standup_with_harness
-from git_standup.ai_env import PROVIDER_SPECS, detect_ai_environment, resolve_ai_connection
+from git_standup.ai_env import (
+    PROVIDER_SPECS,
+    detect_ai_environment,
+    mask_secret,
+    resolve_ai_connection,
+)
 from git_standup.clipboard import clipboard_available, copy_to_clipboard, read_single_key
 from git_standup.config import AIConfig, config_path, load_config, reset_config, save_config
 from git_standup.env_persist import persist_env_var
@@ -1110,8 +1115,12 @@ def _prompt_api_key(provider: str) -> None:
         else:
             print(f"Could not persist {key_name}; it is set for this run only.")
     else:
-        print(f"{key_name} is set for this run only. To persist it yourself, add:")
-        print(f'  export {key_name}="{key}"')
+        masked = mask_secret(key)
+        print(f"{key_name} is set for this run only ({masked}).")
+        print(
+            "To persist it yourself, add the variable to your shell profile; "
+            "the secret value is not printed here."
+        )
 
 
 def _prompt_model(default_model: str) -> str:

@@ -1573,23 +1573,37 @@ def test_json_with_ai_flag_warns_and_stays_raw(
 def test_configure_ai_interactive_sets_key_and_saves(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    capsys,
 ) -> None:
+    secret = "pasted-secret-token-12345"
     config_file = tmp_path / "config.toml"
     choices = iter(["provider", "openai"])
+    getpass_prompts: list[str] = []
     monkeypatch.setattr(cli, "_choice", lambda *_a, **_k: next(choices))
     monkeypatch.setattr(cli, "_prompt_model", lambda default: default)
-    monkeypatch.setattr(cli.getpass, "getpass", lambda *_a, **_k: "sk-entered")
+    monkeypatch.setattr(
+        cli.getpass,
+        "getpass",
+        lambda prompt="": getpass_prompts.append(prompt) or secret,
+    )
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     config = cli.configure_ai_interactive(config_file)
+    captured = capsys.readouterr()
 
     assert config is not None
     assert config.provider == "openai"
-    assert os.environ["OPENAI_API_KEY"] == "sk-entered"
+    assert os.environ["OPENAI_API_KEY"] == secret
+    assert getpass_prompts == ["OPENAI_API_KEY (hidden; leave blank to skip): "]
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert "export OPENAI_API_KEY" not in captured.out
+    assert "secret value is not printed here" in captured.out
     text = config_file.read_text(encoding="utf-8")
     assert 'provider = "openai"' in text
     assert "api_key" not in text  # secrets never written to config
+    assert secret not in text
 
 
 def test_configure_ai_interactive_prompts_for_model(
