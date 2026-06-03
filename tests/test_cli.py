@@ -74,6 +74,49 @@ def test_json_mode_prints_structured_commit_data(monkeypatch: pytest.MonkeyPatch
     assert "_metadata" not in output
 
 
+def test_include_prs_enriches_json_output_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_enrich(commits: list[dict[str, object]], **kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        enriched = [dict(commit) for commit in commits]
+        enriched[0]["pull_request"] = {
+            "number": 42,
+            "title": "Add PR-aware digest",
+            "url": "https://github.com/Tresnanda/git-standup/pull/42",
+            "source": "github-cli",
+        }
+        return enriched
+
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+    monkeypatch.setattr(cli, "enrich_commits_with_prs", fake_enrich)
+
+    exit_code = cli.main(["--json", "--include-prs"])
+
+    assert exit_code == 0
+    assert captured == {"repo_path": None, "query_github": True}
+    output = json.loads(capsys.readouterr().out)
+    pr = output["Alice"]["2026-03-10"]["commits"][0]["pull_request"]
+    assert pr["number"] == 42
+    assert pr["title"] == "Add PR-aware digest"
+
+
+def test_default_json_output_does_not_attempt_pr_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+    monkeypatch.setattr(
+        cli,
+        "enrich_commits_with_prs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected PR lookup")),
+    )
+
+    assert cli.main(["--json"]) == 0
+
+
 def test_json_mode_includes_budget_metadata_when_limited(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -239,6 +282,21 @@ def test_markdown_output_notes_low_signal_commit_messages() -> None:
     assert "- `abc123` wip" in output
     assert "Low-signal commit message" in output
     assert "generic subject `wip`" in output
+
+
+def test_markdown_output_includes_pull_request_metadata() -> None:
+    commits = _sample_commits()
+    commits[0]["pull_request"] = {
+        "number": 42,
+        "title": "Add PR-aware digest",
+        "url": "https://github.com/Tresnanda/git-standup/pull/42",
+    }
+
+    output = build_markdown_output(cli._build_commit_data(commits))
+
+    assert "- `abc123` Add authentication" in output
+    pr_link = "PR: [#42 Add PR-aware digest](https://github.com/Tresnanda/git-standup/pull/42)"
+    assert pr_link in output
 
 
 def test_markdown_mode_formats_multiple_repositories() -> None:
@@ -421,6 +479,9 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
 
     no_merges = cli.parse_args(["--exclude-merges"])
     assert no_merges.exclude_merges is True
+
+    pr_digest = cli.parse_args(["--pr-digest"])
+    assert pr_digest.include_prs is True
 
     branch = cli.parse_args(["branch"])
     assert branch.base_branch == "main"

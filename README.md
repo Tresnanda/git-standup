@@ -18,6 +18,7 @@ Generate standup-ready summaries from Git history.
 - Can focus reports on one or more paths with repeatable `--path` filters.
 - Supports exact report windows with `--since` and `--until`.
 - Can hide merge commits with `--exclude-merges` for less noisy standups.
+- Can opt into PR-aware digests with `--include-prs` / `--pr-digest`.
 - Writes summaries directly to files with `--output`.
 - Supports AI summaries through OpenAI-compatible chat-completion APIs.
 - Flags low-signal commit messages so vague history is not over-polished.
@@ -225,6 +226,20 @@ Hide merge commits for a cleaner activity summary:
 git-standup --exclude-merges --markdown
 ```
 
+Include pull request context in the report:
+
+```bash
+git-standup --markdown --no-ai --include-prs
+```
+
+`--include-prs` (alias: `--pr-digest`) adds a `pull_request` object to JSON and
+prints PR notes in text, Markdown, changelog, and AI input data when a PR can be
+matched. It parses local merge/squash metadata such as `Merge pull request #42`
+and `Add feature (#42)`. When the GitHub CLI (`gh`) is installed and the repo has
+a GitHub `origin`, the flag may also query GitHub through `gh` to fill PR titles
+or URLs, or to find a PR by commit SHA. Without this flag, `git-standup` does not
+perform PR lookups or GitHub API/network calls for PR metadata.
+
 Write output directly to a file:
 
 ```bash
@@ -354,7 +369,7 @@ usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
                    [--base-branch BASE_BRANCH] [--max-commits MAX_COMMITS]
                    [--max-files-per-commit MAX_FILES_PER_COMMIT]
-                   [--exclude-merges] [--path PATH] [--json] [--no-ai]
+                   [--exclude-merges] [--include-prs] [--path PATH] [--json] [--no-ai]
                    [--ai] [--markdown] [--changelog] [--output OUTPUT]
                    [--api-key API_KEY] [--provider PROVIDER]
                    [--harness HARNESS] [--model MODEL]
@@ -377,6 +392,9 @@ options:
   --max-files-per-commit N
                        Maximum changed files to include per commit.
   --exclude-merges     Exclude merge commits from Git history.
+  --include-prs, --pr-digest
+                       Enrich commits with PR numbers, titles, and URLs. May
+                       query GitHub through gh when available.
   --path, --pathspec PATH
                         Only include commits touching this pathspec. Repeat for
                         multiple paths.
