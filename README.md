@@ -125,9 +125,11 @@ the fly. When the report is printed instead of saved, press `c` to copy it to
 the clipboard.
 
 For remote repository reports, the wizard lists repositories from the GitHub CLI
-when `gh` is available. You can select more than one repository, and the report
-groups results by repository. Long author or repository lists are shown in a
-small viewport, so Up/Down moves through the list without flooding the terminal
+when `gh` is available. In an interactive terminal, remote repositories are
+grouped into tabs for owned, organization, and collaborator repositories. Use
+Left/Right to switch tabs, Up/Down to move, and Space to select more than one
+repository. The report groups results by repository. Long author or repository
+lists are shown in a small viewport, so navigation does not flood the terminal
 scrollback.
 
 Non-interactive shells fall back to comma-separated numbered choices for
@@ -268,7 +270,7 @@ export OPENAI_API_KEY="sk-..."
 git-standup
 ```
 
-`git-standup` can also auto-detect OpenAI-compatible keys such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `PERPLEXITY_API_KEY`, and `XAI_API_KEY`. Claude/Anthropic keys are intentionally not detected or promoted by the installer. Azure OpenAI credentials may be noticed as unsupported credentials, but they are not treated as ready AI defaults until Azure endpoint/deployment handling is implemented.
+`git-standup` can also auto-detect OpenAI-compatible keys such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `PERPLEXITY_API_KEY`, and `XAI_API_KEY`. Azure OpenAI is ready when `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, and `AZURE_OPENAI_DEPLOYMENT` are set. Claude/Anthropic keys are intentionally not detected or promoted by the installer.
 
 Save a default provider and model:
 
@@ -278,7 +280,7 @@ git-standup config set-provider --provider gemini --model gemini-3.5-flash
 git-standup config show
 ```
 
-Defaults live at `$XDG_CONFIG_HOME/git-standup/config.toml` or `~/.config/git-standup/config.toml` on macOS/Linux, and `%APPDATA%\git-standup\config.toml` on Windows. The file stores only `provider`, `base_url`, `model`, and optional `harness`; API keys stay in environment variables or `--api-key`.
+Defaults live at `$XDG_CONFIG_HOME/git-standup/config.toml` or `~/.config/git-standup/config.toml` on macOS/Linux, and `%APPDATA%\git-standup\config.toml` on Windows. The file stores only `provider`, `base_url`, `model`, optional `harness`, and optional `api_key_env`; API key values stay in environment variables or `--api-key`.
 
 Resolution priority is:
 
@@ -293,19 +295,22 @@ Reset saved defaults:
 git-standup config reset
 ```
 
-Use the installed Codex CLI instead of an API key:
+Use an installed AI CLI instead of an API key:
 
 ```bash
 git-standup config set-cli --harness codex
 git-standup config set-cli --harness codex --model gpt-5
+git-standup config set-cli --harness cursor-agent --model gpt-5.2
+git-standup config set-cli --harness opencode
 ```
 
-When Codex is selected, `git-standup` runs `codex exec` in read-only mode and uses your existing Codex login/config. No API key is required by `git-standup`.
+When a CLI harness is selected, `git-standup` uses your existing subscription,
+login, or local CLI config. No API key is required by `git-standup`.
 
-Supported saved harnesses are `codex`, `ollama`, and `lms`. The wizard may also
-notice tools such as `gh` or `opencode` on your PATH, but those are reported as
-other local AI tools until `git-standup` has a safe, tested way to use them for
-standup polishing.
+Supported saved harnesses include `codex`, `cursor-agent`, `agent`, `opencode`,
+`gemini`, `aider`, `goose`, `copilot`, `kiro-cli`, `amp`, `ollama`, and `lms`.
+The wizard also notices other AI-related tools on your PATH and reports them as
+extra tools when no safe headless adapter exists yet.
 
 Use a custom model:
 
@@ -420,7 +425,8 @@ options:
   --api-key KEY        API key for AI summaries. Defaults to OPENAI_API_KEY.
   --provider NAME      Provider override or config provider name.
   --harness NAME       Supported AI harness for config set-cli
-                       (codex, ollama, lms).
+                       (codex, cursor-agent, agent, opencode, gemini, aider,
+                       goose, copilot, kiro-cli, amp, ollama, lms).
   --model NAME         Chat model name. Defaults to gpt-4o-mini.
   --base-url URL       OpenAI-compatible API base URL.
   --version            Print the installed version.

@@ -25,6 +25,7 @@ from rich.prompt import Confirm, Prompt
 from git_standup import __version__
 from git_standup.ai import generate_standup, generate_standup_with_harness
 from git_standup.ai_env import (
+    CLI_HARNESS_SPECS,
     CONFIGURABLE_CLI_HARNESSES,
     PROVIDER_SPECS,
     detect_ai_environment,
@@ -892,6 +893,80 @@ def _interactive_multi_select(
                 cursor = (cursor - 1) % len(display)
 
 
+def _interactive_tabbed_multi_select(
+    title: str,
+    groups: dict[str, list[str]],
+    *,
+    key_reader=_read_terminal_key,
+) -> list[str]:
+    tabs = [(name, values) for name, values in groups.items() if values]
+    if not tabs:
+        return []
+    tab_index = 0
+    cursor_by_tab = {name: 0 for name, _values in tabs}
+    selected: set[str] = set()
+    rendered_lines = 0
+
+    def current_tab() -> tuple[str, list[str]]:
+        return tabs[tab_index]
+
+    def render() -> None:
+        nonlocal rendered_lines
+        _move_cursor_up(rendered_lines)
+        tab_name, options = current_tab()
+        cursor = cursor_by_tab[tab_name]
+        start, end, paged = _picker_window(cursor, len(options))
+        print(f"{title}:")
+        rendered_tabs = " | ".join(
+            f"[{name}]" if index == tab_index else name
+            for index, (name, _values) in enumerate(tabs)
+        )
+        print(f"Tabs: {rendered_tabs}")
+        print(
+            "Use Left/Right to switch tabs, Up/Down to move, "
+            "Space selects, Enter confirms, a selects all, q cancels."
+        )
+        for index in range(start, end):
+            repo = options[index]
+            pointer = ">" if index == cursor else " "
+            mark = "[x]" if repo in selected else "[ ]"
+            print(f"{pointer} {mark} {repo}")
+        footer_lines = 0
+        if paged:
+            print(f"Showing {start + 1}-{end} of {len(options)}. Selected: {len(selected)}.")
+            footer_lines = 1
+        rendered_lines = (end - start) + 3 + footer_lines
+
+    with _raw_terminal_session(key_reader is _read_terminal_key):
+        while True:
+            render()
+            key = key_reader()
+            tab_name, options = current_tab()
+            cursor = cursor_by_tab[tab_name]
+            if key in {"\r", "\n"}:
+                result = sorted(selected)
+                _collapse_summary(title, ", ".join(result) if result else "none", rendered_lines)
+                return result
+            if key.lower() == "q":
+                raise _WizardCancelled
+            if key.lower() == "a":
+                selected.update(options)
+            elif key in {" ", "\t"}:
+                repo = options[cursor]
+                if repo in selected:
+                    selected.remove(repo)
+                else:
+                    selected.add(repo)
+            elif key in {"\x1b[C", "\x1bOC", "\xe0M", "\x00M", "l"}:
+                tab_index = (tab_index + 1) % len(tabs)
+            elif key in {"\x1b[D", "\x1bOD", "\xe0K", "\x00K", "h"}:
+                tab_index = (tab_index - 1) % len(tabs)
+            elif key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
+                cursor_by_tab[tab_name] = (cursor + 1) % len(options)
+            elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
+                cursor_by_tab[tab_name] = (cursor - 1) % len(options)
+
+
 def _recent_authors(repo: str) -> list[str]:
     cmd = ["git"]
     if repo != ".":
@@ -951,35 +1026,61 @@ def _choose_authors(repo: str) -> list[str]:
     return _parse_author_selection(raw, [])
 
 
-def _remote_repositories() -> list[str]:
-    gh = shutil.which("gh")
-    if not gh:
-        return []
-    try:
-        with _spinner("Fetching your GitHub repositories…"):
-            result = subprocess.run(
-                [
-                    gh,
-                    "api",
-                    "user/repos?affiliation=owner,collaborator,organization_member&per_page=100",
-                    "--paginate",
-                    "--jq",
-                    ".[].full_name",
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=30,
-            )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return []
+def _dedupe_sorted_repos(lines: str) -> list[str]:
     repos: list[str] = []
     seen: set[str] = set()
-    for line in result.stdout.splitlines():
+    for line in lines.splitlines():
         name = line.strip()
         if name and name not in seen:
             seen.add(name)
             repos.append(name)
+    return sorted(repos, key=str.lower)
+
+
+def _remote_repository_groups() -> dict[str, list[str]]:
+    gh = shutil.which("gh")
+    if not gh:
+        return {}
+    queries = [
+        ("Owned", "owner"),
+        ("Organizations", "organization_member"),
+        ("Collaborator", "collaborator"),
+    ]
+    groups: dict[str, list[str]] = {}
+    seen_global: set[str] = set()
+    try:
+        with _spinner("Fetching your GitHub repositories…"):
+            for label, affiliation in queries:
+                result = subprocess.run(
+                    [
+                        gh,
+                        "api",
+                        f"user/repos?affiliation={affiliation}&per_page=100",
+                        "--paginate",
+                        "--jq",
+                        ".[].full_name",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=30,
+                )
+                repos = [
+                    repo
+                    for repo in _dedupe_sorted_repos(result.stdout)
+                    if repo not in seen_global
+                ]
+                seen_global.update(repos)
+                groups[label] = repos
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return {}
+    return groups
+
+
+def _remote_repositories() -> list[str]:
+    repos: list[str] = []
+    for values in _remote_repository_groups().values():
+        repos.extend(values)
     return sorted(repos, key=str.lower)
 
 
@@ -1006,19 +1107,24 @@ def _prompt_custom_repos() -> list[str]:
 
 
 def _choose_remote_repositories() -> list[str]:
-    repos = _remote_repositories()
+    groups = _remote_repository_groups()
+    repos = [repo for values in groups.values() for repo in values]
     if repos:
         if sys.stdin.isatty() and sys.stdout.isatty():
-            return _interactive_multi_select(
-                "Choose remote repositories",
-                repos,
-                add_label=_ADD_CUSTOM_REPO_LABEL,
-                add_prompt=_prompt_custom_repos,
-            )
+            selected = _interactive_tabbed_multi_select("Choose remote repositories", groups)
+            if selected:
+                return selected
+            return _prompt_custom_repos()
 
         print("\nChoose remote repositories:")
-        for index, repo in enumerate(repos, start=1):
-            print(f"  {index}) {repo}")
+        index = 1
+        for label, values in groups.items():
+            if not values:
+                continue
+            print(f"{label}:")
+            for repo in values:
+                print(f"  {index}) {repo}")
+                index += 1
         raw = Prompt.ask(
             "Repository choices (comma-separated numbers, owner/name, or URL)",
             default="",
@@ -1081,6 +1187,11 @@ def _provider_defaults(provider: str) -> tuple[str, str]:
     for spec in PROVIDER_SPECS:
         if spec.provider == provider:
             return spec.base_url, spec.text_model
+    if provider == "azure-openai":
+        return "", os.environ.get("AZURE_OPENAI_DEPLOYMENT") or os.environ.get(
+            "AZURE_OPENAI_MODEL",
+            "",
+        )
     if provider == "custom":
         return "https://api.openai.com/v1", "gpt-4o-mini"
     raise ValueError(f"Unknown provider: {provider}")
@@ -1091,6 +1202,9 @@ def _harness_defaults(harness: str) -> tuple[str, str]:
         return "http://localhost:11434/v1", "llama3.1"
     if harness == "lms":
         return "http://localhost:1234/v1", "local-model"
+    for spec in CLI_HARNESS_SPECS:
+        if spec.command == harness:
+            return "", spec.default_model
     return "", ""
 
 
@@ -1099,6 +1213,8 @@ def _provider_key_env(provider: str) -> str:
     for spec in PROVIDER_SPECS:
         if spec.provider == provider:
             return spec.key_names[0]
+    if provider == "azure-openai":
+        return "AZURE_OPENAI_API_KEY"
     return "OPENAI_API_KEY"
 
 
@@ -1134,6 +1250,13 @@ def _prompt_model(default_model: str) -> str:
 
 def _supported_harness_text() -> str:
     return ", ".join(CONFIGURABLE_CLI_HARNESSES)
+
+
+def _harness_label(harness: str) -> str:
+    for spec in CLI_HARNESS_SPECS:
+        if spec.command == harness:
+            return spec.label
+    return harness
 
 
 def _detected_supported_harnesses(ai_report: dict[str, Any]) -> list[str]:
@@ -1190,10 +1313,13 @@ def configure_ai_interactive(
         ai_report = detect_ai_environment(os.environ)
         detected = _detected_supported_harnesses(ai_report)
         if detected:
-            print("Detected supported AI harnesses: " + ", ".join(detected))
+            print(
+                "Detected ready AI harnesses: "
+                + ", ".join(_harness_label(item) for item in detected)
+            )
         if ai_report.get("unsupported_cli_tools"):
             print(
-                "Detected other AI tools not supported as git-standup harnesses: "
+                "Detected other AI tools without a headless adapter yet: "
                 + ", ".join(str(item) for item in ai_report["unsupported_cli_tools"])
             )
         default_harness = detected[0] if detected else CONFIGURABLE_CLI_HARNESSES[0]
@@ -1215,16 +1341,20 @@ def configure_ai_interactive(
         prompted = provider is None
         chosen = provider or _choice(
             "Provider",
-            [spec.provider for spec in PROVIDER_SPECS] + ["custom"],
+            [spec.provider for spec in PROVIDER_SPECS] + ["azure-openai", "custom"],
             "openai",
         )
         default_base_url, default_model = _provider_defaults(chosen)
         if chosen == "custom" and not base_url:
             default_base_url = Prompt.ask("OpenAI-compatible base URL", default=default_base_url)
+        api_key_env = ""
+        if chosen == "custom":
+            api_key_env = Prompt.ask("API key environment variable", default="OPENAI_API_KEY")
         config = AIConfig(
             provider=chosen,
             base_url=base_url or default_base_url,
             model=model or (_prompt_model(default_model) if prompted else default_model),
+            api_key_env=api_key_env,
         )
         if allow_key:
             _prompt_api_key(chosen)
@@ -1357,14 +1487,22 @@ def run_wizard() -> int:
         detected_supported = _detected_supported_harnesses(ai_report)
         if detected_supported:
             print(
-                "Detected supported AI harnesses: "
-                + ", ".join(detected_supported)
+                "Detected ready AI harnesses: "
+                + ", ".join(_harness_label(item) for item in detected_supported)
             )
+        if ai_report.get("api_keys"):
+            providers = ", ".join(
+                str(item.get("provider"))
+                for item in ai_report["api_keys"]
+                if isinstance(item, dict)
+            )
+            if providers:
+                print("Detected ready API providers: " + providers)
         if ai_report.get("unsupported_cli_tools"):
             print(
                 "Detected other AI tools: "
                 + ", ".join(str(item) for item in ai_report["unsupported_cli_tools"])
-                + " (not supported as git-standup AI harnesses yet)"
+                + " (no headless adapter yet)"
             )
         if ai_report.get("unsupported_api_keys"):
             names = ", ".join(
@@ -1376,7 +1514,7 @@ def run_wizard() -> int:
                 print(
                     "Detected unsupported AI credentials: "
                     + names
-                    + " (not treated as ready AI defaults yet)"
+                    + " (missing setup details)"
                 )
         if preset == "branch":
             answers["base_branch"] = Prompt.ask("Base branch", default="main")
@@ -1878,7 +2016,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         with _spinner("Polishing with AI…"):
-            if connection.provider == "codex":
+            if connection.provider in CONFIGURABLE_CLI_HARNESSES and connection.provider not in {
+                "ollama",
+                "lms",
+            }:
                 standup_text = generate_standup_with_harness(
                     commit_data=commit_data,
                     harness=connection.provider,

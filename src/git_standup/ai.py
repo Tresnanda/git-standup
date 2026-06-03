@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 from typing import Any
@@ -10,6 +11,21 @@ import httpx
 
 # Maximum characters for the prompt — conservative for small models
 _MAX_PROMPT_CHARS = 120_000
+
+
+def _chat_completions_url(url_base: str) -> str:
+    """Build a chat completions URL for OpenAI-compatible and Azure deployments."""
+    base = url_base.rstrip("/")
+    if "/openai/deployments/" not in base:
+        return f"{base}/chat/completions"
+
+    if "/chat/completions" not in base:
+        base = f"{base}/chat/completions"
+    if "?" in base:
+        return base
+
+    api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-06-01")
+    return f"{base}?api-version={api_version}"
 
 
 def _format_instruction(output_format: str) -> str:
@@ -104,7 +120,7 @@ def generate_standup(
         )
 
     url_base = base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-    url = f"{url_base.rstrip('/')}/chat/completions"
+    url = _chat_completions_url(url_base)
 
     prompt = _build_prompt(
         commit_data, budget_metadata=budget_metadata, output_format=output_format
@@ -164,15 +180,15 @@ def generate_standup_with_harness(
     output_format: str = "text",
 ) -> str:
     """Generate a standup summary with a local AI CLI harness."""
-    if harness != "codex":
-        raise RuntimeError(f"Unsupported AI CLI harness: {harness}")
-
     prompt = (
         _build_prompt(
             commit_data, budget_metadata=budget_metadata, output_format=output_format
         )
         + "\n\nReturn only the finished standup summary. Do not edit files or run commands."
     )
+    if harness != "codex":
+        return _run_non_codex_harness(harness=harness, model=model, prompt=prompt)
+
     command = [
         "codex",
         "exec",
@@ -208,3 +224,90 @@ def generate_standup_with_harness(
 
         output = output_file.read().decode("utf-8").strip()
         return output or result.stdout.strip()
+
+
+def _run_non_codex_harness(*, harness: str, model: str, prompt: str) -> str:
+    with (
+        tempfile.NamedTemporaryFile(mode="w", suffix=".txt", encoding="utf-8") as prompt_file,
+        tempfile.TemporaryDirectory(prefix="git-standup-ai-") as workdir,
+    ):
+        prompt_file.write(prompt)
+        prompt_file.flush()
+        command = _harness_command(
+            harness=harness,
+            model=model,
+            prompt=prompt,
+            prompt_file=prompt_file.name,
+        )
+        try:
+            result = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                cwd=workdir,
+                timeout=180,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"{harness} CLI was not found on PATH.") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{harness} CLI timed out while generating the standup.") from exc
+
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(f"{harness} CLI failed: {detail}")
+    return result.stdout.strip()
+
+
+def _harness_command(
+    *,
+    harness: str,
+    model: str,
+    prompt: str,
+    prompt_file: str,
+) -> list[str]:
+    if harness == "opencode":
+        command = ["opencode", "-p", prompt, "-q"]
+        if model:
+            command.extend(["--model", model])
+        return command
+    if harness in {"cursor-agent", "agent"}:
+        command = [harness, "-p", "--output-format", "text", prompt]
+        if model:
+            command.extend(["--model", model])
+        return command
+    if harness == "gemini":
+        command = ["gemini", "-p", prompt]
+        if model:
+            command.extend(["--model", model])
+        return command
+    if harness == "aider":
+        command = ["aider", "--message-file", prompt_file]
+        if model:
+            command.extend(["--model", model])
+        return command
+    if harness == "goose":
+        command = [
+            "goose",
+            "run",
+            "--no-session",
+            "-i",
+            prompt_file,
+            "-q",
+            "--output-format",
+            "text",
+        ]
+        if model:
+            command.extend(["--model", model])
+        return command
+    if harness == "copilot":
+        return ["copilot", "-p", prompt]
+    if harness == "kiro-cli":
+        return ["kiro-cli", "chat", "--no-interactive", prompt]
+    if harness == "amp":
+        return ["amp", "-x", prompt]
+    raise RuntimeError(
+        "Unsupported AI CLI harness: "
+        + shlex.quote(harness)
+        + ". Run git-standup config set-cli with a supported harness."
+    )

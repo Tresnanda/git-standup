@@ -1,4 +1,5 @@
 from git_standup.ai_env import (
+    CONFIGURABLE_CLI_HARNESSES,
     detect_ai_environment,
     mask_secret,
     resolve_ai_connection,
@@ -31,6 +32,41 @@ def test_detect_ai_environment_finds_keys_and_cli_harnesses() -> None:
     assert report["cli_harnesses"] == ["codex", "ollama"]
 
 
+def test_detect_ai_environment_marks_popular_cli_harnesses_as_ready() -> None:
+    ready_tools = {
+        "codex",
+        "cursor-agent",
+        "agent",
+        "opencode",
+        "gemini",
+        "aider",
+        "goose",
+        "copilot",
+        "kiro-cli",
+        "amp",
+    }
+
+    report = detect_ai_environment(
+        env={},
+        which=lambda command: f"/usr/bin/{command}" if command in ready_tools else None,
+    )
+
+    assert report["unsupported_cli_tools"] == []
+    assert report["cli_harnesses"] == [
+        "codex",
+        "cursor-agent",
+        "agent",
+        "opencode",
+        "gemini",
+        "aider",
+        "goose",
+        "copilot",
+        "kiro-cli",
+        "amp",
+    ]
+    assert set(report["cli_harnesses"]) <= set(CONFIGURABLE_CLI_HARNESSES)
+
+
 def test_detect_ai_environment_separates_supported_harnesses_from_other_tools() -> None:
     report = detect_ai_environment(
         env={},
@@ -40,8 +76,8 @@ def test_detect_ai_environment_separates_supported_harnesses_from_other_tools() 
     )
 
     assert report["ai_tools"] == ["codex", "gh", "opencode"]
-    assert report["cli_harnesses"] == ["codex"]
-    assert report["unsupported_cli_tools"] == ["gh", "opencode"]
+    assert report["cli_harnesses"] == ["codex", "opencode"]
+    assert report["unsupported_cli_tools"] == ["gh"]
 
 
 def test_detect_ai_environment_only_reports_masked_keys() -> None:
@@ -53,30 +89,65 @@ def test_detect_ai_environment_only_reports_masked_keys() -> None:
     assert secret not in repr(report)
 
 
-def test_detect_ai_environment_keeps_azure_out_of_ready_api_keys() -> None:
+def test_detect_ai_environment_supports_azure_when_endpoint_and_deployment_exist() -> None:
     secret = "azure-secret-token-12345"
 
     report = detect_ai_environment(
         env={
             "AZURE_OPENAI_API_KEY": secret,
             "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com",
+            "AZURE_OPENAI_DEPLOYMENT": "standup-gpt",
         },
         which=lambda _command: None,
     )
 
-    assert report["api_keys"] == []
-    assert report["unsupported_api_keys"] == [
+    assert report["unsupported_api_keys"] == []
+    assert report["api_keys"] == [
         {
             "name": "AZURE_OPENAI_API_KEY",
             "provider": "azure-openai",
             "masked": mask_secret(secret),
-            "reason": (
-                "Azure OpenAI needs endpoint/deployment handling "
-                "that is not supported yet."
-            ),
+            "base_url": "https://example.openai.azure.com/openai/deployments/standup-gpt",
+            "model": "standup-gpt",
+            "vision": False,
         }
     ]
     assert secret not in repr(report)
+
+
+def test_detect_ai_environment_warns_for_incomplete_azure_credentials() -> None:
+    report = detect_ai_environment(
+        env={"AZURE_OPENAI_API_KEY": "azure-secret-token-12345"},
+        which=lambda _command: None,
+    )
+
+    assert report["api_keys"] == []
+    assert report["unsupported_api_keys"][0]["provider"] == "azure-openai"
+    assert "AZURE_OPENAI_ENDPOINT" in str(report["unsupported_api_keys"][0]["reason"])
+
+
+def test_detect_ai_environment_supports_custom_provider_env_from_config() -> None:
+    report = detect_ai_environment(
+        env={"MY_GATEWAY_KEY": "custom-secret-token"},
+        which=lambda _command: None,
+        config=AIConfig(
+            provider="internal-gateway",
+            base_url="https://gateway.example.com/v1",
+            model="team-model",
+            api_key_env="MY_GATEWAY_KEY",
+        ),
+    )
+
+    assert report["api_keys"] == [
+        {
+            "name": "MY_GATEWAY_KEY",
+            "provider": "internal-gateway",
+            "masked": mask_secret("custom-secret-token"),
+            "base_url": "https://gateway.example.com/v1",
+            "model": "team-model",
+            "vision": False,
+        }
+    ]
 
 
 def test_resolve_ai_connection_prefers_explicit_values() -> None:

@@ -19,6 +19,14 @@ class ProviderSpec:
 
 
 @dataclass(frozen=True)
+class CLIHarnessSpec:
+    command: str
+    label: str
+    default_model: str = ""
+    aliases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class AIConnection:
     provider: str
     api_key: str
@@ -64,7 +72,21 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec("xai", ("XAI_API_KEY",), "https://api.x.ai/v1", "grok-3-mini"),
 )
 
-CONFIGURABLE_CLI_HARNESSES = ("codex", "ollama", "lms")
+CLI_HARNESS_SPECS: tuple[CLIHarnessSpec, ...] = (
+    CLIHarnessSpec("codex", "Codex CLI", "gpt-5"),
+    CLIHarnessSpec("cursor-agent", "Cursor Agent", "gpt-5.2", aliases=("agent",)),
+    CLIHarnessSpec("agent", "Cursor Agent", "gpt-5.2"),
+    CLIHarnessSpec("opencode", "OpenCode"),
+    CLIHarnessSpec("gemini", "Gemini CLI", "gemini-3.5-flash"),
+    CLIHarnessSpec("aider", "Aider"),
+    CLIHarnessSpec("goose", "Goose"),
+    CLIHarnessSpec("copilot", "GitHub Copilot CLI"),
+    CLIHarnessSpec("kiro-cli", "Kiro CLI"),
+    CLIHarnessSpec("amp", "Amp"),
+    CLIHarnessSpec("ollama", "Ollama", "llama3.1"),
+    CLIHarnessSpec("lms", "LM Studio", "local-model"),
+)
+CONFIGURABLE_CLI_HARNESSES = tuple(spec.command for spec in CLI_HARNESS_SPECS)
 DETECTABLE_AI_TOOLS = (
     "openai",
     "gemini",
@@ -75,6 +97,17 @@ DETECTABLE_AI_TOOLS = (
     "aider",
     "opencode",
     "codex",
+    "cursor-agent",
+    "agent",
+    "goose",
+    "copilot",
+    "kiro-cli",
+    "amp",
+    "windsurf",
+    "cline",
+    "roo",
+    "continue",
+    "zed",
 )
 LOCAL_ENDPOINTS = (
     "http://localhost:11434/v1",
@@ -117,19 +150,46 @@ def _iter_detected_keys(env: Mapping[str, str]) -> list[dict[str, object]]:
     return detected
 
 
+def _azure_base_url(endpoint: str, deployment: str) -> str:
+    return f"{endpoint.rstrip('/')}/openai/deployments/{deployment}"
+
+
+def _iter_configured_keys(
+    env: Mapping[str, str],
+    config: AIConfig | None,
+) -> list[dict[str, object]]:
+    if not config or not config.provider or not config.api_key_env:
+        return []
+    value = env.get(config.api_key_env)
+    if not value:
+        return []
+    return [
+        {
+            "name": config.api_key_env,
+            "provider": config.provider,
+            "masked": mask_secret(value),
+            "base_url": config.base_url or "https://api.openai.com/v1",
+            "model": config.model or "gpt-4o-mini",
+            "vision": False,
+        }
+    ]
+
+
 def _iter_unsupported_keys(env: Mapping[str, str]) -> list[dict[str, object]]:
     """Return detected credentials that git-standup should not claim as usable."""
     detected: list[dict[str, object]] = []
     azure_key = env.get("AZURE_OPENAI_API_KEY")
-    if azure_key:
+    azure_endpoint = env.get("AZURE_OPENAI_ENDPOINT")
+    azure_deployment = env.get("AZURE_OPENAI_DEPLOYMENT") or env.get("AZURE_OPENAI_MODEL")
+    if azure_key and not (azure_endpoint and azure_deployment):
         detected.append(
             {
                 "name": "AZURE_OPENAI_API_KEY",
                 "provider": "azure-openai",
                 "masked": mask_secret(azure_key),
                 "reason": (
-                    "Azure OpenAI needs endpoint/deployment handling "
-                    "that is not supported yet."
+                    "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT "
+                    "to use Azure OpenAI."
                 ),
             }
         )
@@ -139,14 +199,31 @@ def _iter_unsupported_keys(env: Mapping[str, str]) -> list[dict[str, object]]:
 def detect_ai_environment(
     env: Mapping[str, str],
     which: Callable[[str], str | None] = default_which,
+    config: AIConfig | None = None,
 ) -> dict[str, object]:
     """Detect AI keys and local CLI harnesses without making paid API calls."""
     detected_tools = sorted(command for command in DETECTABLE_AI_TOOLS if which(command))
     harnesses = [
         command for command in CONFIGURABLE_CLI_HARNESSES if command in detected_tools
     ]
+    api_keys = _iter_detected_keys(env)
+    azure_key = env.get("AZURE_OPENAI_API_KEY")
+    azure_endpoint = env.get("AZURE_OPENAI_ENDPOINT")
+    azure_deployment = env.get("AZURE_OPENAI_DEPLOYMENT") or env.get("AZURE_OPENAI_MODEL")
+    if azure_key and azure_endpoint and azure_deployment:
+        api_keys.append(
+            {
+                "name": "AZURE_OPENAI_API_KEY",
+                "provider": "azure-openai",
+                "masked": mask_secret(azure_key),
+                "base_url": _azure_base_url(azure_endpoint, azure_deployment),
+                "model": azure_deployment,
+                "vision": False,
+            }
+        )
+    api_keys.extend(_iter_configured_keys(env, config))
     return {
-        "api_keys": sorted(_iter_detected_keys(env), key=lambda item: str(item["name"])),
+        "api_keys": sorted(api_keys, key=lambda item: str(item["name"])),
         "unsupported_api_keys": sorted(
             _iter_unsupported_keys(env), key=lambda item: str(item["name"])
         ),
@@ -164,12 +241,21 @@ def _spec_for_provider(provider: str) -> ProviderSpec | None:
     return None
 
 
+def _harness_spec(harness: str) -> CLIHarnessSpec | None:
+    for spec in CLI_HARNESS_SPECS:
+        if harness == spec.command or harness in spec.aliases:
+            return spec
+    return None
+
+
 def _api_key_for_provider(provider: str, env: Mapping[str, str]) -> str:
     spec = _spec_for_provider(provider)
     if spec:
         for key_name in spec.key_names:
             if env.get(key_name):
                 return env[key_name]
+    if provider == "azure-openai":
+        return env.get("AZURE_OPENAI_API_KEY", "")
     return env.get("OPENAI_API_KEY", "")
 
 
@@ -186,9 +272,10 @@ def resolve_ai_connection(
         provider = provider_arg or (config.provider if config and config.provider else "")
         harness = config.harness if config else ""
         if harness and not provider:
+            harness_spec = _harness_spec(harness)
             base_url, default_model = _HARNESS_DEFAULTS.get(
                 harness,
-                ("https://api.openai.com/v1", "gpt-4o-mini"),
+                ("", harness_spec.default_model if harness_spec else ""),
             )
             return AIConnection(
                 provider=harness,
@@ -202,9 +289,21 @@ def resolve_ai_connection(
         default_model = spec.text_model if spec else "gpt-4o-mini"
         if provider == "openai":
             default_base_url = env.get("OPENAI_BASE_URL") or default_base_url
+        elif provider == "azure-openai":
+            deployment = (
+                env.get("AZURE_OPENAI_DEPLOYMENT")
+                or env.get("AZURE_OPENAI_MODEL")
+                or (config.model if config else "")
+            )
+            endpoint = env.get("AZURE_OPENAI_ENDPOINT")
+            if endpoint and deployment:
+                default_base_url = _azure_base_url(endpoint, deployment)
+                default_model = deployment
         return AIConnection(
             provider=provider or "custom",
-            api_key=api_key_arg or _api_key_for_provider(provider, env),
+            api_key=api_key_arg
+            or (env.get(config.api_key_env, "") if config and config.api_key_env else "")
+            or _api_key_for_provider(provider, env),
             base_url=base_url_arg or (config.base_url if config else "") or default_base_url,
             model=model_arg or (config.model if config else "") or default_model,
         )
@@ -237,6 +336,17 @@ def resolve_ai_connection(
                     else spec.base_url,
                     model=model_arg or spec.text_model,
                 )
+
+    azure_key = env.get("AZURE_OPENAI_API_KEY")
+    azure_endpoint = env.get("AZURE_OPENAI_ENDPOINT")
+    azure_deployment = env.get("AZURE_OPENAI_DEPLOYMENT") or env.get("AZURE_OPENAI_MODEL")
+    if azure_key and azure_endpoint and azure_deployment:
+        return AIConnection(
+            provider="azure-openai",
+            api_key=azure_key,
+            base_url=_azure_base_url(azure_endpoint, azure_deployment),
+            model=model_arg or azure_deployment,
+        )
 
     return AIConnection(
         provider="openai",
