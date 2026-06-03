@@ -1366,6 +1366,18 @@ def run_wizard() -> int:
                 + ", ".join(str(item) for item in ai_report["unsupported_cli_tools"])
                 + " (not supported as git-standup AI harnesses yet)"
             )
+        if ai_report.get("unsupported_api_keys"):
+            names = ", ".join(
+                str(item.get("name"))
+                for item in ai_report["unsupported_api_keys"]
+                if isinstance(item, dict)
+            )
+            if names:
+                print(
+                    "Detected unsupported AI credentials: "
+                    + names
+                    + " (not treated as ready AI defaults yet)"
+                )
         if preset == "branch":
             answers["base_branch"] = Prompt.ask("Base branch", default="main")
         elif preset == "custom":

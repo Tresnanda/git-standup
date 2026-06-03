@@ -131,6 +131,10 @@ Supported saved harnesses are `codex`, `ollama`, and `lms`. Other detected tools
 such as `gh` or `opencode` should not be saved as AI harnesses unless
 git-standup adds explicit support for invoking them.
 
+OpenAI-compatible provider defaults should use the providers exposed by
+`git-standup config set-provider`. Azure OpenAI credentials are not a ready
+default unless git-standup adds explicit Azure endpoint/deployment support.
+
 Useful setup command:
 
 ```bash

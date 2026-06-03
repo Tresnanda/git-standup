@@ -114,6 +114,12 @@ def _iter_detected_keys(env: Mapping[str, str]) -> list[dict[str, object]]:
                 )
                 break
 
+    return detected
+
+
+def _iter_unsupported_keys(env: Mapping[str, str]) -> list[dict[str, object]]:
+    """Return detected credentials that git-standup should not claim as usable."""
+    detected: list[dict[str, object]] = []
     azure_key = env.get("AZURE_OPENAI_API_KEY")
     if azure_key:
         detected.append(
@@ -121,9 +127,10 @@ def _iter_detected_keys(env: Mapping[str, str]) -> list[dict[str, object]]:
                 "name": "AZURE_OPENAI_API_KEY",
                 "provider": "azure-openai",
                 "masked": mask_secret(azure_key),
-                "base_url": env.get("AZURE_OPENAI_ENDPOINT", ""),
-                "model": env.get("AZURE_OPENAI_DEPLOYMENT") or env.get("AZURE_OPENAI_MODEL", ""),
-                "vision": False,
+                "reason": (
+                    "Azure OpenAI needs endpoint/deployment handling "
+                    "that is not supported yet."
+                ),
             }
         )
     return detected
@@ -140,6 +147,9 @@ def detect_ai_environment(
     ]
     return {
         "api_keys": sorted(_iter_detected_keys(env), key=lambda item: str(item["name"])),
+        "unsupported_api_keys": sorted(
+            _iter_unsupported_keys(env), key=lambda item: str(item["name"])
+        ),
         "cli_harnesses": harnesses,
         "ai_tools": detected_tools,
         "unsupported_cli_tools": sorted(set(detected_tools) - set(harnesses)),

@@ -1,10 +1,25 @@
 from pathlib import Path
 
+from git_standup.ai_env import PROVIDER_SPECS
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
+
+
+def _provider_label(provider: str) -> str:
+    return {
+        "openai": "OpenAI API",
+        "gemini": "Gemini API",
+        "openrouter": "OpenRouter API",
+        "groq": "Groq API",
+        "mistral": "Mistral API",
+        "together": "Together AI API",
+        "perplexity": "Perplexity API",
+        "xai": "xAI API",
+    }[provider]
 
 
 def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
@@ -25,10 +40,18 @@ def test_unix_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert 'install --python "$PYTHON" "$REPO_SPEC"' in text
     assert "Choose AI default:" in text
     assert "1) Codex CLI" in text
-    assert "2) OpenAI API" in text
-    assert "3) Gemini API" in text
-    assert "4) OpenRouter API" in text
-    assert "5) Skip AI setup" in text
+    for index, spec in enumerate(PROVIDER_SPECS, start=2):
+        assert f'{spec.provider}) echo "{_provider_label(spec.provider)}" ;;' in text
+        assert f'{index}) $(provider_label {spec.provider})' in text
+        assert (
+            f'{index}) ensure_provider_key "{spec.provider}"; '
+            f'write_provider_config "{spec.provider}"'
+        ) in text
+        for key_name in spec.key_names:
+            assert key_name in text
+        assert spec.base_url in text
+        assert spec.text_model in text
+    assert "10) Skip AI setup" in text
     assert "Paste API key now" in text
     assert text.count("has_tty || return 0") >= 2
     assert "save_secret_to_shell_profile" in text
@@ -63,10 +86,15 @@ def test_windows_installer_uses_numbered_ai_setup_and_key_entry() -> None:
     assert '"install", "--python", $Python, $RepoSpec' in text
     assert "Choose AI default:" in text
     assert "1) Codex CLI" in text
-    assert "2) OpenAI API" in text
-    assert "3) Gemini API" in text
-    assert "4) OpenRouter API" in text
-    assert "5) Skip AI setup" in text
+    for index, spec in enumerate(PROVIDER_SPECS, start=2):
+        assert f'"{spec.provider}" {{ return "{_provider_label(spec.provider)}" }}' in text
+        assert f'Write-Host "{index}) $(Get-ProviderLabel "{spec.provider}")"' in text
+        assert f'"{index}" {{ Ensure-ProviderKey "{spec.provider}";' in text
+        for key_name in spec.key_names:
+            assert key_name in text
+        assert spec.base_url in text
+        assert spec.text_model in text
+    assert "10) Skip AI setup" in text
     assert "Paste API key now" in text
     assert "Save-UserSecret" in text
     assert "harness = `\"codex`\"" in text

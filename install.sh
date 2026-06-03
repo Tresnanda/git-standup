@@ -189,11 +189,29 @@ write_codex_config() {
   log "[ok] Saved Codex as the AI default"
 }
 
-provider_env_key() {
+provider_label() {
+  case "$1" in
+    openai) echo "OpenAI API" ;;
+    gemini) echo "Gemini API" ;;
+    openrouter) echo "OpenRouter API" ;;
+    groq) echo "Groq API" ;;
+    mistral) echo "Mistral API" ;;
+    together) echo "Together AI API" ;;
+    perplexity) echo "Perplexity API" ;;
+    xai) echo "xAI API" ;;
+  esac
+}
+
+provider_env_keys() {
   case "$1" in
     openai) echo "OPENAI_API_KEY" ;;
-    gemini) echo "GEMINI_API_KEY" ;;
+    gemini) echo "GEMINI_API_KEY GOOGLE_API_KEY" ;;
     openrouter) echo "OPENROUTER_API_KEY" ;;
+    groq) echo "GROQ_API_KEY" ;;
+    mistral) echo "MISTRAL_API_KEY" ;;
+    together) echo "TOGETHER_API_KEY" ;;
+    perplexity) echo "PERPLEXITY_API_KEY" ;;
+    xai) echo "XAI_API_KEY" ;;
   esac
 }
 
@@ -201,6 +219,11 @@ provider_base_url() {
   case "$1" in
     gemini) echo "https://generativelanguage.googleapis.com/v1beta/openai/" ;;
     openrouter) echo "https://openrouter.ai/api/v1" ;;
+    groq) echo "https://api.groq.com/openai/v1" ;;
+    mistral) echo "https://api.mistral.ai/v1" ;;
+    together) echo "https://api.together.xyz/v1" ;;
+    perplexity) echo "https://api.perplexity.ai" ;;
+    xai) echo "https://api.x.ai/v1" ;;
     *) echo "${OPENAI_BASE_URL:-https://api.openai.com/v1}" ;;
   esac
 }
@@ -209,38 +232,46 @@ provider_model() {
   case "$1" in
     gemini) echo "gemini-3.5-flash" ;;
     openrouter) echo "openai/gpt-4o-mini" ;;
+    groq) echo "llama-3.3-70b-versatile" ;;
+    mistral) echo "mistral-small-latest" ;;
+    together) echo "meta-llama/Llama-3.3-70B-Instruct-Turbo" ;;
+    perplexity) echo "sonar-pro" ;;
+    xai) echo "grok-3-mini" ;;
     *) echo "gpt-4o-mini" ;;
   esac
 }
 
 ensure_provider_key() {
   provider="$1"
-  key_name="$(provider_env_key "$provider")"
-  eval "key_value=\${$key_name:-}"
-  [ -n "$key_value" ] && { log "[ok] $key_name already set"; return; }
+  key_names="$(provider_env_keys "$provider")"
+  primary_key="${key_names%% *}"
+  for key_name in $key_names; do
+    eval "key_value=\${$key_name:-}"
+    [ -n "$key_value" ] && { log "[ok] $key_name already set"; return; }
+  done
   has_tty || return 0
   log ""
-  log "$key_name was not found."
+  log "$primary_key was not found."
   log "1) Paste API key now"
   log "2) Show me the env var command"
   log "3) Skip key setup"
   choice="$(ask_choice "Choice" "1")"
   case "$choice" in
     1)
-      printf 'Enter %s: ' "$key_name" >/dev/tty
+      printf 'Enter %s: ' "$primary_key" >/dev/tty
       stty -echo </dev/tty 2>/dev/null || true
       read -r api_key </dev/tty || api_key=""
       stty echo </dev/tty 2>/dev/null || true
       printf '\n' >/dev/tty
       if [ -n "$api_key" ]; then
-        save_secret_to_shell_profile "$key_name" "$api_key"
+        save_secret_to_shell_profile "$primary_key" "$api_key"
       else
         log "[info] Empty key skipped"
       fi
       ;;
     2)
       log "Run this later:"
-      log "  export $key_name=\"your-api-key\""
+      log "  export $primary_key=\"your-api-key\""
       ;;
     *)
       log "[info] Skipped API key setup"
@@ -253,7 +284,12 @@ default_ai_choice() {
   elif [ -n "${OPENAI_API_KEY:-}" ]; then echo "2"
   elif [ -n "${GEMINI_API_KEY:-}" ] || [ -n "${GOOGLE_API_KEY:-}" ]; then echo "3"
   elif [ -n "${OPENROUTER_API_KEY:-}" ]; then echo "4"
-  else echo "5"
+  elif [ -n "${GROQ_API_KEY:-}" ]; then echo "5"
+  elif [ -n "${MISTRAL_API_KEY:-}" ]; then echo "6"
+  elif [ -n "${TOGETHER_API_KEY:-}" ]; then echo "7"
+  elif [ -n "${PERPLEXITY_API_KEY:-}" ]; then echo "8"
+  elif [ -n "${XAI_API_KEY:-}" ]; then echo "9"
+  else echo "10"
   fi
 }
 
@@ -262,16 +298,26 @@ setup_ai_defaults() {
   log ""
   log "Choose AI default:"
   log "1) Codex CLI - recommended if you use Codex"
-  log "2) OpenAI API"
-  log "3) Gemini API"
-  log "4) OpenRouter API"
-  log "5) Skip AI setup"
+  log "2) $(provider_label openai)"
+  log "3) $(provider_label gemini)"
+  log "4) $(provider_label openrouter)"
+  log "5) $(provider_label groq)"
+  log "6) $(provider_label mistral)"
+  log "7) $(provider_label together)"
+  log "8) $(provider_label perplexity)"
+  log "9) $(provider_label xai)"
+  log "10) Skip AI setup"
   choice="$(ask_choice "Choice" "$(default_ai_choice)")"
   case "$choice" in
     1) write_codex_config ;;
     2) ensure_provider_key "openai"; write_provider_config "openai" "$(provider_base_url openai)" "$(provider_model openai)" ;;
     3) ensure_provider_key "gemini"; write_provider_config "gemini" "$(provider_base_url gemini)" "$(provider_model gemini)" ;;
     4) ensure_provider_key "openrouter"; write_provider_config "openrouter" "$(provider_base_url openrouter)" "$(provider_model openrouter)" ;;
+    5) ensure_provider_key "groq"; write_provider_config "groq" "$(provider_base_url groq)" "$(provider_model groq)" ;;
+    6) ensure_provider_key "mistral"; write_provider_config "mistral" "$(provider_base_url mistral)" "$(provider_model mistral)" ;;
+    7) ensure_provider_key "together"; write_provider_config "together" "$(provider_base_url together)" "$(provider_model together)" ;;
+    8) ensure_provider_key "perplexity"; write_provider_config "perplexity" "$(provider_base_url perplexity)" "$(provider_model perplexity)" ;;
+    9) ensure_provider_key "xai"; write_provider_config "xai" "$(provider_base_url xai)" "$(provider_model xai)" ;;
     *) log "[info] Skipped AI setup. You can run: $APP_NAME config" ;;
   esac
 }
