@@ -47,7 +47,14 @@ For unattended installs, pass `--yes`:
 curl -fsSL https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.sh | bash -s -- --yes
 ```
 
-The installer uses `pipx`, checks Git, and offers a simple numbered AI setup. You can choose Codex CLI, OpenAI, Gemini, OpenRouter, or skip AI setup. If you paste an API key during install, it is saved to your user shell environment; the app config stores only provider/model defaults. It may ask whether to star the GitHub repo, defaulting to yes; if it cannot star from the terminal, it prints the repo link instead. After install, run `git-standup` in your terminal to start the guided report builder. The wizard checks for a newer GitHub version and asks before updating.
+The installer uses `pipx`, checks Git, and offers a simple numbered AI setup.
+You can choose Codex CLI, any supported OpenAI-compatible provider, or skip AI
+setup. If you paste an API key during install, it is saved to your user shell
+environment; the app config stores only provider/model defaults. It may ask
+whether to star the GitHub repo, defaulting to yes; if it cannot star from the
+terminal, it prints the repo link instead. After install, run `git-standup` in
+your terminal to start the guided report builder. The wizard checks for a newer
+GitHub version and asks before updating.
 
 Manual install:
 
@@ -261,7 +268,7 @@ export OPENAI_API_KEY="sk-..."
 git-standup
 ```
 
-`git-standup` can also auto-detect OpenAI-compatible keys such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `PERPLEXITY_API_KEY`, and `XAI_API_KEY`. Claude/Anthropic keys are intentionally not detected or promoted by the installer.
+`git-standup` can also auto-detect OpenAI-compatible keys such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `TOGETHER_API_KEY`, `PERPLEXITY_API_KEY`, and `XAI_API_KEY`. Claude/Anthropic keys are intentionally not detected or promoted by the installer. Azure OpenAI credentials may be noticed as unsupported credentials, but they are not treated as ready AI defaults until Azure endpoint/deployment handling is implemented.
 
 Save a default provider and model:
 
@@ -306,7 +313,7 @@ Use a custom model:
 git-standup --model gpt-4o-mini
 ```
 
-Use an OpenAI-compatible endpoint such as Ollama, LocalAI, Azure OpenAI, or an internal gateway:
+Use an OpenAI-compatible endpoint such as Ollama, LocalAI, or an internal gateway:
 
 ```bash
 git-standup \

@@ -966,6 +966,20 @@ def test_ai_mode_rejects_stale_unsupported_harness_config(
     assert "Supported harnesses: codex, ollama, lms" in captured.err
 
 
+def test_ai_provider_available_ignores_only_unsupported_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda _path: None)
+
+    assert not cli._ai_provider_available(
+        {
+            "api_keys": [],
+            "unsupported_api_keys": [{"name": "AZURE_OPENAI_API_KEY"}],
+            "cli_harnesses": [],
+        }
+    )
+
+
 def test_build_wizard_args_markdown_with_ai_omits_no_ai_flag() -> None:
     args = cli.build_wizard_args(
         {

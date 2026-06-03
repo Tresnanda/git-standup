@@ -214,11 +214,29 @@ function Save-ProviderConfig($Provider, $BaseUrl, $Model) {
     Write-Host "[ok] Saved AI default to $configPath"
 }
 
-function Get-ProviderEnvKey($Provider) {
+function Get-ProviderLabel($Provider) {
     switch ($Provider) {
-        "openai" { return "OPENAI_API_KEY" }
-        "gemini" { return "GEMINI_API_KEY" }
-        "openrouter" { return "OPENROUTER_API_KEY" }
+        "openai" { return "OpenAI API" }
+        "gemini" { return "Gemini API" }
+        "openrouter" { return "OpenRouter API" }
+        "groq" { return "Groq API" }
+        "mistral" { return "Mistral API" }
+        "together" { return "Together AI API" }
+        "perplexity" { return "Perplexity API" }
+        "xai" { return "xAI API" }
+    }
+}
+
+function Get-ProviderEnvKeys($Provider) {
+    switch ($Provider) {
+        "openai" { return @("OPENAI_API_KEY") }
+        "gemini" { return @("GEMINI_API_KEY", "GOOGLE_API_KEY") }
+        "openrouter" { return @("OPENROUTER_API_KEY") }
+        "groq" { return @("GROQ_API_KEY") }
+        "mistral" { return @("MISTRAL_API_KEY") }
+        "together" { return @("TOGETHER_API_KEY") }
+        "perplexity" { return @("PERPLEXITY_API_KEY") }
+        "xai" { return @("XAI_API_KEY") }
     }
 }
 
@@ -226,6 +244,11 @@ function Get-ProviderBaseUrl($Provider) {
     switch ($Provider) {
         "gemini" { return "https://generativelanguage.googleapis.com/v1beta/openai/" }
         "openrouter" { return "https://openrouter.ai/api/v1" }
+        "groq" { return "https://api.groq.com/openai/v1" }
+        "mistral" { return "https://api.mistral.ai/v1" }
+        "together" { return "https://api.together.xyz/v1" }
+        "perplexity" { return "https://api.perplexity.ai" }
+        "xai" { return "https://api.x.ai/v1" }
         default {
             if ($env:OPENAI_BASE_URL) { return $env:OPENAI_BASE_URL }
             return "https://api.openai.com/v1"
@@ -237,35 +260,43 @@ function Get-ProviderModel($Provider) {
     switch ($Provider) {
         "gemini" { return "gemini-3.5-flash" }
         "openrouter" { return "openai/gpt-4o-mini" }
+        "groq" { return "llama-3.3-70b-versatile" }
+        "mistral" { return "mistral-small-latest" }
+        "together" { return "meta-llama/Llama-3.3-70B-Instruct-Turbo" }
+        "perplexity" { return "sonar-pro" }
+        "xai" { return "grok-3-mini" }
         default { return "gpt-4o-mini" }
     }
 }
 
 function Ensure-ProviderKey($Provider) {
-    $keyName = Get-ProviderEnvKey $Provider
-    if ([Environment]::GetEnvironmentVariable($keyName)) {
-        Write-Host "[ok] $keyName already set"
-        return
+    $keyNames = Get-ProviderEnvKeys $Provider
+    $primaryKey = $keyNames[0]
+    foreach ($keyName in $keyNames) {
+        if ([Environment]::GetEnvironmentVariable($keyName)) {
+            Write-Host "[ok] $keyName already set"
+            return
+        }
     }
     if ($Yes) { return }
     Write-Host ""
-    Write-Host "$keyName was not found."
+    Write-Host "$primaryKey was not found."
     Write-Host "1) Paste API key now"
     Write-Host "2) Show me the env var command"
     Write-Host "3) Skip key setup"
     $choice = Read-Choice "Choice" "1"
     switch ($choice) {
         "1" {
-            $apiKey = Read-SecretText "Enter $keyName"
+            $apiKey = Read-SecretText "Enter $primaryKey"
             if (-not [string]::IsNullOrWhiteSpace($apiKey)) {
-                Save-UserSecret $keyName $apiKey
+                Save-UserSecret $primaryKey $apiKey
             } else {
                 Write-Host "[info] Empty key skipped"
             }
         }
         "2" {
             Write-Host "Run this later:"
-            Write-Host "  [Environment]::SetEnvironmentVariable(`"$keyName`", `"your-api-key`", `"User`")"
+            Write-Host "  [Environment]::SetEnvironmentVariable(`"$primaryKey`", `"your-api-key`", `"User`")"
         }
         default {
             Write-Host "[info] Skipped API key setup"
@@ -278,7 +309,12 @@ function Get-DefaultAIChoice {
     if ($env:OPENAI_API_KEY) { return "2" }
     if ($env:GEMINI_API_KEY -or $env:GOOGLE_API_KEY) { return "3" }
     if ($env:OPENROUTER_API_KEY) { return "4" }
-    return "5"
+    if ($env:GROQ_API_KEY) { return "5" }
+    if ($env:MISTRAL_API_KEY) { return "6" }
+    if ($env:TOGETHER_API_KEY) { return "7" }
+    if ($env:PERPLEXITY_API_KEY) { return "8" }
+    if ($env:XAI_API_KEY) { return "9" }
+    return "10"
 }
 
 function Setup-AIDefaults {
@@ -286,16 +322,26 @@ function Setup-AIDefaults {
     Write-Host ""
     Write-Host "Choose AI default:"
     Write-Host "1) Codex CLI - recommended if you use Codex"
-    Write-Host "2) OpenAI API"
-    Write-Host "3) Gemini API"
-    Write-Host "4) OpenRouter API"
-    Write-Host "5) Skip AI setup"
+    Write-Host "2) $(Get-ProviderLabel "openai")"
+    Write-Host "3) $(Get-ProviderLabel "gemini")"
+    Write-Host "4) $(Get-ProviderLabel "openrouter")"
+    Write-Host "5) $(Get-ProviderLabel "groq")"
+    Write-Host "6) $(Get-ProviderLabel "mistral")"
+    Write-Host "7) $(Get-ProviderLabel "together")"
+    Write-Host "8) $(Get-ProviderLabel "perplexity")"
+    Write-Host "9) $(Get-ProviderLabel "xai")"
+    Write-Host "10) Skip AI setup"
     $choice = Read-Choice "Choice" (Get-DefaultAIChoice)
     switch ($choice) {
         "1" { Save-CodexConfig }
         "2" { Ensure-ProviderKey "openai"; Save-ProviderConfig "openai" (Get-ProviderBaseUrl "openai") (Get-ProviderModel "openai") }
         "3" { Ensure-ProviderKey "gemini"; Save-ProviderConfig "gemini" (Get-ProviderBaseUrl "gemini") (Get-ProviderModel "gemini") }
         "4" { Ensure-ProviderKey "openrouter"; Save-ProviderConfig "openrouter" (Get-ProviderBaseUrl "openrouter") (Get-ProviderModel "openrouter") }
+        "5" { Ensure-ProviderKey "groq"; Save-ProviderConfig "groq" (Get-ProviderBaseUrl "groq") (Get-ProviderModel "groq") }
+        "6" { Ensure-ProviderKey "mistral"; Save-ProviderConfig "mistral" (Get-ProviderBaseUrl "mistral") (Get-ProviderModel "mistral") }
+        "7" { Ensure-ProviderKey "together"; Save-ProviderConfig "together" (Get-ProviderBaseUrl "together") (Get-ProviderModel "together") }
+        "8" { Ensure-ProviderKey "perplexity"; Save-ProviderConfig "perplexity" (Get-ProviderBaseUrl "perplexity") (Get-ProviderModel "perplexity") }
+        "9" { Ensure-ProviderKey "xai"; Save-ProviderConfig "xai" (Get-ProviderBaseUrl "xai") (Get-ProviderModel "xai") }
         default { Write-Host "[info] Skipped AI setup. You can run: $AppName config" }
     }
 }

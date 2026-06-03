@@ -53,6 +53,32 @@ def test_detect_ai_environment_only_reports_masked_keys() -> None:
     assert secret not in repr(report)
 
 
+def test_detect_ai_environment_keeps_azure_out_of_ready_api_keys() -> None:
+    secret = "azure-secret-token-12345"
+
+    report = detect_ai_environment(
+        env={
+            "AZURE_OPENAI_API_KEY": secret,
+            "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com",
+        },
+        which=lambda _command: None,
+    )
+
+    assert report["api_keys"] == []
+    assert report["unsupported_api_keys"] == [
+        {
+            "name": "AZURE_OPENAI_API_KEY",
+            "provider": "azure-openai",
+            "masked": mask_secret(secret),
+            "reason": (
+                "Azure OpenAI needs endpoint/deployment handling "
+                "that is not supported yet."
+            ),
+        }
+    ]
+    assert secret not in repr(report)
+
+
 def test_resolve_ai_connection_prefers_explicit_values() -> None:
     connection = resolve_ai_connection(
         api_key_arg="explicit-key",
