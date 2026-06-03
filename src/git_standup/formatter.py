@@ -120,6 +120,82 @@ def build_markdown_output(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def build_stats_output(
+    commit_data: dict[str, Any],
+    *,
+    output_format: str = "text",
+) -> str:
+    """Build an aggregate-only standup stats report."""
+    markdown = output_format == "markdown"
+    lines = ["# Standup Stats", ""] if markdown else ["Standup Stats", ""]
+    grand = {"commits": 0, "files": set(), "insertions": 0, "deletions": 0}
+
+    for repo_name, repo_data in _repository_sections(commit_data):
+        if repo_name is not None:
+            if markdown:
+                lines.extend([f"## {repo_name}", ""])
+                author_heading = "###"
+            else:
+                lines.extend([f"Repository: {repo_name}", "=" * (12 + len(repo_name)), ""])
+                author_heading = ""
+        else:
+            author_heading = "##" if markdown else ""
+
+        for author, days in repo_data.items():
+            if markdown:
+                lines.extend([f"{author_heading} {author}", ""])
+            else:
+                lines.extend([author, "-" * len(author)])
+
+            author_total = {"commits": 0, "files": set(), "insertions": 0, "deletions": 0}
+            for date_key, day_data in days.items():
+                stats = day_data.get("stats", {})
+                counts = _stats_counts(stats)
+                _add_stats(author_total, counts)
+                _add_stats(grand, _stats_counts(stats, namespace=repo_name))
+                line = _format_stats_summary(date_key, counts)
+                lines.append(f"- {line}" if markdown else f"  {line}")
+
+            author_summary = _format_stats_summary("Total", author_total)
+            lines.append(f"- **{author_summary}**" if markdown else f"  {author_summary}")
+            lines.append("")
+
+    grand_summary = _format_stats_summary("Total", grand)
+    if markdown:
+        lines.extend(["## Summary", "", f"- **{grand_summary}**"])
+    else:
+        lines.extend(["Summary", "-------", grand_summary])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _stats_counts(stats: dict[str, Any], namespace: str | None = None) -> dict[str, Any]:
+    files_changed = stats.get("files_changed", [])
+    files = {
+        f"{namespace}:{path}" if namespace else str(path)
+        for path in files_changed
+    }
+    return {
+        "commits": int(stats.get("total_commits", 0) or 0),
+        "files": files,
+        "insertions": int(stats.get("total_insertions", 0) or 0),
+        "deletions": int(stats.get("total_deletions", 0) or 0),
+    }
+
+
+def _add_stats(target: dict[str, Any], counts: dict[str, Any]) -> None:
+    target["commits"] += counts["commits"]
+    target["files"].update(counts["files"])
+    target["insertions"] += counts["insertions"]
+    target["deletions"] += counts["deletions"]
+
+
+def _format_stats_summary(label: str, counts: dict[str, Any]) -> str:
+    return (
+        f"{label}: {counts['commits']} commit(s), {len(counts['files'])} file(s), "
+        f"+{counts['insertions']}/-{counts['deletions']} lines"
+    )
+
+
 def build_changelog_output(
     commits: list[dict[str, Any]],
     budget_metadata: dict[str, Any] | None = None,

@@ -32,6 +32,7 @@ from git_standup.formatter import (
     build_changelog_output,
     build_json_output,
     build_markdown_output,
+    build_stats_output,
     build_text_output,
     print_ai_standup,
     print_text_standup,
@@ -520,6 +521,8 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
         args.append("--json")
     elif output_format == "changelog":
         args.append("--changelog")
+    elif output_format == "stats":
+        args.append("--stats-only")
     elif output_format == "markdown":
         args.append("--markdown")
         if not use_ai:
@@ -542,6 +545,8 @@ def _today_start_string(now: datetime | None = None) -> str:
 def _default_output_path(output_format: str) -> str:
     if output_format == "changelog":
         return "changelog.md"
+    if output_format == "stats":
+        return "standup-stats.txt"
     if output_format == "markdown":
         return "standup.md"
     if output_format == "json":
@@ -1313,6 +1318,7 @@ def run_wizard() -> int:
                 ("markdown", "Markdown", "Paste-ready for Slack, Notion, or GitHub."),
                 ("text", "Plain text", "Simple terminal summary."),
                 ("json", "JSON", "Structured data for scripts or automation."),
+                ("stats", "Stats only", "Aggregate counts without per-commit details."),
                 (
                     "changelog",
                     "Changelog",
@@ -1323,7 +1329,7 @@ def run_wizard() -> int:
         )
 
         _wizard_separator()
-        if answers["format"] in {"json", "changelog"}:
+        if answers["format"] in {"json", "changelog", "stats"}:
             answers["ai"] = False
         elif _ai_provider_available(ai_report):
             answers["ai"] = _confirm("Polish with AI?", default=True)
@@ -1381,6 +1387,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --no-ai             # Text summary without AI\n"
         "  git-standup --markdown          # AI-polished Markdown summary\n"
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
+        "  git-standup --stats-only       # Aggregate stats without commit details\n"
         "  git-standup --changelog        # Release-note Markdown without AI\n"
         "  git-standup --json              # Raw JSON output\n"
         "  git-standup --max-commits 20 --max-files-per-commit 10\n"
@@ -1497,6 +1504,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Output release-note Markdown grouped by conventional commit category "
             "(always no AI)"
         ),
+    )
+    parser.add_argument(
+        "--stats-only",
+        action="store_true",
+        help="Output aggregate commit/file/line stats without per-commit details (always no AI)",
     )
     parser.add_argument(
         "--output", "--out",
@@ -1690,6 +1702,27 @@ def main(argv: list[str] | None = None) -> int:
 
     commit_data = multi_repo_commit_data or _build_commit_data(commits)
 
+    output_format = "markdown" if args.markdown else "text"
+
+    if args.stats_only:
+        if args.ai:
+            print(
+                "Warning: --ai has no effect with --stats-only; stats output is always raw.",
+                file=sys.stderr,
+            )
+        if args.json:
+            print(
+                "Warning: --json has no effect with --stats-only; "
+                "use --markdown for Markdown stats.",
+                file=sys.stderr,
+            )
+        stats_output = build_stats_output(commit_data, output_format=output_format)
+        if output_format == "markdown":
+            _emit_markdown(stats_output, args.output)
+        else:
+            _emit(stats_output, args.output, lambda: print(stats_output, end=""))
+        return 0
+
     if args.json:
         if args.ai:
             print(
@@ -1701,8 +1734,6 @@ def main(argv: list[str] | None = None) -> int:
         )
         _emit(output + "\n", args.output, lambda: print(output))
         return 0
-
-    output_format = "markdown" if args.markdown else "text"
 
     def _emit_raw() -> None:
         """Emit the raw (non-AI) formatter output for the chosen format."""

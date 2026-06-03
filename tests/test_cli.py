@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from git_standup import cli
-from git_standup.formatter import build_markdown_output
+from git_standup.formatter import build_markdown_output, build_stats_output
 
 
 @pytest.fixture(autouse=True)
@@ -259,6 +259,43 @@ def test_markdown_mode_formats_multiple_repositories() -> None:
     assert "- `abc123` Add web UI" in output
 
 
+def test_stats_only_mode_prints_aggregate_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
+
+    exit_code = cli.main(["--stats-only"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Standup Stats" in output
+    assert "Alice" in output
+    assert "2026-03-10: 1 commit(s), 1 file(s), +12/-2 lines" in output
+    assert "Total: 1 commit(s), 1 file(s), +12/-2 lines" in output
+    assert "Add authentication" not in output
+
+
+def test_stats_output_formats_multiple_repositories_as_markdown() -> None:
+    output = build_stats_output(
+        {
+            "_repositories": {
+                "Tresnanda/api": _sample_commit_data("Add API"),
+                "Tresnanda/web": _sample_commit_data("Add web UI"),
+            }
+        },
+        output_format="markdown",
+    )
+
+    assert "# Standup Stats" in output
+    assert "## Tresnanda/api" in output
+    assert "### Alice" in output
+    assert "- 2026-03-10: 1 commit(s), 1 file(s), +12/-2 lines" in output
+    assert "## Tresnanda/web" in output
+    assert "## Summary" in output
+    assert "- **Total: 2 commit(s), 2 file(s), +24/-4 lines**" in output
+
+
 def test_changelog_mode_prints_release_note_markdown_without_ai(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -396,6 +433,9 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
 
     changelog = cli.parse_args(["--changelog"])
     assert changelog.changelog is True
+
+    stats = cli.parse_args(["--stats-only"])
+    assert stats.stats_only is True
 
     paths = cli.parse_args(["--path", "src", "--pathspec", "README.md"])
     assert paths.pathspecs == ["src", "README.md"]
@@ -899,6 +939,14 @@ def test_build_wizard_args_json_ignores_ai_toggle() -> None:
     assert args == ["--since", "2026-06-02", "--json"]
 
 
+def test_build_wizard_args_stats_only_is_raw_report() -> None:
+    args = cli.build_wizard_args(
+        {"repo": ".", "preset": "week", "format": "stats", "ai": True}
+    )
+
+    assert args == ["--days", "7", "--stats-only"]
+
+
 def test_today_start_string_uses_local_midnight_with_timezone() -> None:
     now = datetime(2026, 6, 2, 14, 17, 14, tzinfo=timezone(timedelta(hours=8)))
 
@@ -945,6 +993,7 @@ def test_default_output_path_matches_output_style() -> None:
     assert cli._default_output_path("markdown") == "standup.md"
     assert cli._default_output_path("json") == "standup.json"
     assert cli._default_output_path("changelog") == "changelog.md"
+    assert cli._default_output_path("stats") == "standup-stats.txt"
 
 
 def test_numbered_choice_shows_plain_language_options(
@@ -1064,7 +1113,7 @@ def test_run_wizard_asks_timeframe_then_author_then_format(
     assert prompts[2] == ("By who choice", {"choices": ["1", "2", "3"], "default": "1"})
     assert prompts[3] == (
         "Output format choice",
-        {"choices": ["1", "2", "3", "4"], "default": "1"},
+        {"choices": ["1", "2", "3", "4", "5"], "default": "1"},
     )
     out = capsys.readouterr().out
     assert "Review changes from:" in out
