@@ -44,6 +44,7 @@ from git_standup.gitlog import (
     group_by_author,
     group_by_date,
 )
+from git_standup.prs import enrich_commits_with_prs
 
 APP_NAME = "git-standup"
 DIST_NAME = "git-standup"
@@ -89,6 +90,8 @@ def _build_commit_data(
                 }
                 if c.get("truncated"):
                     item["truncated"] = c["truncated"]
+                if c.get("pull_request"):
+                    item["pull_request"] = c["pull_request"]
                 quality = describe_commit_quality(c)
                 if quality:
                     item["quality"] = quality
@@ -1384,6 +1387,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
         "  git-standup --author me         # My commits only\n"
         "  git-standup --exclude-merges   # Hide merge commits\n"
+        "  git-standup --include-prs      # Include PR numbers/titles/URLs\n"
         "  git-standup --no-ai             # Text summary without AI\n"
         "  git-standup --markdown          # AI-polished Markdown summary\n"
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
@@ -1476,6 +1480,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--exclude-merges",
         action="store_true",
         help="Exclude merge commits from git history",
+    )
+    parser.add_argument(
+        "--include-prs",
+        "--pr-digest",
+        dest="include_prs",
+        action="store_true",
+        help=(
+            "Enrich commits with PR numbers, titles, and URLs. May query GitHub "
+            "through gh when available; otherwise uses local merge/squash metadata."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -1657,6 +1671,12 @@ def main(argv: list[str] | None = None) -> int:
                         max_commits=args.max_commits,
                         max_files_per_commit=args.max_files_per_commit,
                     )
+                    if args.include_prs:
+                        fetched = enrich_commits_with_prs(
+                            fetched,
+                            repo_path=str(repo_path),
+                            query_github=True,
+                        )
                     for commit in fetched:
                         commit["repository"] = repo_name
                     repo_commits.append((repo_name, fetched))
@@ -1689,6 +1709,12 @@ def main(argv: list[str] | None = None) -> int:
             max_commits=args.max_commits,
             max_files_per_commit=args.max_files_per_commit,
         )
+        if args.include_prs:
+            commits = enrich_commits_with_prs(
+                commits,
+                repo_path=args.repo,
+                query_github=True,
+            )
 
     if args.changelog:
         if args.ai:

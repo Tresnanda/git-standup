@@ -83,6 +83,16 @@ Specific paths:
 git-standup --no-wizard --path src --path tests --markdown
 ```
 
+PR-aware digest:
+
+```bash
+git-standup --no-wizard --markdown --include-prs
+```
+
+Use `--include-prs` / `--pr-digest` only when the user wants pull request
+context. The flag may query GitHub through `gh` to enrich PR metadata; without
+the flag, do not perform PR lookups.
+
 Another local repository:
 
 ```bash
@@ -103,6 +113,8 @@ git-standup --no-wizard --remote-repo owner/api --remote-repo owner/web --markdo
 - `--stats-only`: use for compact aggregate counts without per-commit details.
 - `--changelog`: use for release-note style Markdown grouped by conventional
   commit type.
+- `--include-prs` / `--pr-digest`: opt into PR numbers, titles, and URLs when
+  local merge/squash metadata or GitHub CLI lookup can resolve them.
 - `--output <file>`: use when the user wants the report saved.
 
 If the user asks for terminal output that is easy to read, prefer Markdown and

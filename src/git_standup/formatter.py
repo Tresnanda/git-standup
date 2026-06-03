@@ -90,6 +90,9 @@ def build_markdown_output(
                     hash_short = commit.get("hash", "")[:8]
                     subject = commit.get("subject", "")
                     lines.append(f"- `{hash_short}` {subject}")
+                    pr_note = _format_pull_request_note(commit, markdown=True)
+                    if pr_note:
+                        lines.append(f"  - {pr_note}")
                     quality_note = _format_quality_note(commit)
                     if quality_note:
                         lines.append(f"  - {quality_note}")
@@ -277,6 +280,9 @@ def build_changelog_output(
             quality_note = _format_quality_note(commit)
             if quality_note:
                 lines.append(f"  - {quality_note}")
+            pr_note = _format_pull_request_note(commit, markdown=True)
+            if pr_note:
+                lines.append(f"  - {pr_note}")
         lines.append("")
 
     lines.extend(["## Change Stats", ""])
@@ -345,6 +351,25 @@ def _format_quality_note(commit: dict[str, Any]) -> str:
     return "⚠️ Low-signal commit message."
 
 
+def _format_pull_request_note(commit: dict[str, Any], *, markdown: bool) -> str:
+    pull_request = commit.get("pull_request")
+    if not isinstance(pull_request, dict):
+        return ""
+    number = pull_request.get("number")
+    if number is None:
+        return ""
+    title = str(pull_request.get("title") or "").strip()
+    url = str(pull_request.get("url") or "").strip()
+    label = f"#{number}"
+    if title:
+        label = f"{label} {title}"
+    if url:
+        if markdown:
+            return f"PR: [{label}]({url})"
+        return f"PR: {label} ({url})"
+    return f"PR: {label}"
+
+
 def _format_commit_change_summary(files: list[dict[str, Any]]) -> str:
     """Format per-commit changed-file/line stats for changelog bullets."""
     insertions = sum(int(file_stat.get("insertions", 0) or 0) for file_stat in files)
@@ -411,6 +436,9 @@ def build_text_output(
                     hash_short = commit.get("hash", "")[:8]
                     subject = commit.get("subject", "")
                     lines.append(f"    [{hash_short}] {subject}")
+                    pr_note = _format_pull_request_note(commit, markdown=False)
+                    if pr_note:
+                        lines.append(f"      {pr_note}")
                     quality_note = _format_quality_note(commit)
                     if quality_note:
                         lines.append(f"      {quality_note}")
@@ -503,6 +531,9 @@ def print_text_standup(
                 console.print(
                     f"    [{hash_short}] [bold]{subject}[/bold]"
                 )
+                pr_note = _format_pull_request_note(c, markdown=False)
+                if pr_note:
+                    console.print(f"      [cyan]{pr_note}[/cyan]")
                 quality_note = _format_quality_note(c)
                 if quality_note:
                     console.print(f"      [yellow]{quality_note}[/yellow]")
