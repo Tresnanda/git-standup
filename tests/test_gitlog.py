@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 from git_standup.gitlog import (
     _parse_log_output,
@@ -10,25 +11,48 @@ from git_standup.gitlog import (
 )
 
 
+def _nul_log_record(
+    commit_hash: str,
+    author: str,
+    email: str,
+    date: str,
+    subject: str,
+    body: str,
+    *numstat_tokens: bytes,
+) -> bytes:
+    fields = [
+        b"\x1e" + commit_hash.encode(),
+        author.encode(),
+        email.encode(),
+        date.encode(),
+        subject.encode(),
+        body.encode(),
+    ]
+    raw = b"\x00".join(fields) + b"\x00"
+    if numstat_tokens:
+        raw += b"\n" + b"\x00".join(numstat_tokens) + b"\x00"
+    return raw
+
+
 def test_parse_log_output_extracts_commits_and_file_stats() -> None:
-    raw = """---COMMIT---
-hash:abc123
-author:Alice
-email:alice@example.com
-date:2026-03-10T09:15:00+00:00
-subject:Add authentication
-body:Initial implementation
-12	2	src/auth.py
-4	0	tests/test_auth.py
----COMMIT---
-hash:def456
-author:Bob
-email:bob@example.com
-date:2026-03-09T12:00:00+00:00
-subject:Fix payment retry
-body:
-3	1	src/payments.py
-"""
+    raw = _nul_log_record(
+        "abc123",
+        "Alice",
+        "alice@example.com",
+        "2026-03-10T09:15:00+00:00",
+        "Add authentication",
+        "Initial implementation",
+        b"12	2	src/auth.py",
+        b"4	0	tests/test_auth.py",
+    ) + _nul_log_record(
+        "def456",
+        "Bob",
+        "bob@example.com",
+        "2026-03-09T12:00:00+00:00",
+        "Fix payment retry",
+        "",
+        b"3	1	src/payments.py",
+    )
 
     commits = _parse_log_output(raw)
 
@@ -58,16 +82,15 @@ body:
 
 
 def test_parse_log_output_preserves_multiline_commit_body() -> None:
-    raw = """---COMMIT---
-hash:abc123
-author:Alice
-email:alice@example.com
-date:2026-03-10T09:15:00+00:00
-subject:Add reporting
-body:First paragraph
-Second paragraph
-3	1	src/report.py
-"""
+    raw = _nul_log_record(
+        "abc123",
+        "Alice",
+        "alice@example.com",
+        "2026-03-10T09:15:00+00:00",
+        "Add reporting",
+        "First paragraph\nSecond paragraph",
+        b"3	1	src/report.py",
+    )
 
     commits = _parse_log_output(raw)
 
@@ -75,20 +98,70 @@ Second paragraph
 
 
 def test_parse_log_output_keeps_binary_numstat_entries() -> None:
-    raw = """---COMMIT---
-hash:abc123
-author:Alice
-email:alice@example.com
-date:2026-03-10T09:15:00+00:00
-subject:Add demo image
-body:
--	-	assets/demo.png
-"""
+    raw = _nul_log_record(
+        "abc123",
+        "Alice",
+        "alice@example.com",
+        "2026-03-10T09:15:00+00:00",
+        "Add demo image",
+        "",
+        b"-	-	assets/demo.png",
+    )
 
     commits = _parse_log_output(raw)
 
     assert commits[0]["files"] == [
         {"path": "assets/demo.png", "insertions": 0, "deletions": 0}
+    ]
+
+
+def test_parse_log_output_handles_nul_rename_path_tokens() -> None:
+    raw = _nul_log_record(
+        "abc123",
+        "Alice",
+        "alice@example.com",
+        "2026-03-10T09:15:00+00:00",
+        "Rename file",
+        "",
+        b"0\t0\t",
+        "old\tname.txt".encode(),
+        "new\nname.txt".encode(),
+    )
+
+    commits = _parse_log_output(raw)
+
+    assert commits[0]["files"] == [
+        {"path": "old\tname.txt => new\nname.txt", "insertions": 0, "deletions": 0}
+    ]
+
+
+def test_get_commits_handles_nul_delimited_body_and_paths(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Alice"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "alice@example.com"], cwd=tmp_path, check=True
+    )
+    nested = tmp_path / "docs"
+    nested.mkdir()
+    weird_path = nested / "name\nwith\ttabs.txt"
+    weird_path.write_text("hello\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    body = "Line-delimited parser poison\n---COMMIT---\n1\t2\tfake.py\nbody:fake"
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "Add weird path", "-m", body],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    commits = get_commits(repo_path=str(tmp_path), since="1970-01-01", max_commits=1)
+
+    assert len(commits) == 1
+    assert commits[0]["subject"] == "Add weird path"
+    assert commits[0]["body"] == body
+    assert commits[0]["files"] == [
+        {"path": "docs/name\nwith\ttabs.txt", "insertions": 1, "deletions": 0}
     ]
 
 
@@ -143,7 +216,7 @@ def test_get_commits_uses_repo_path_and_explicit_date_window(monkeypatch) -> Non
         calls.append(cmd)
         if cmd[-2:] == ["rev-parse", "--show-toplevel"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -157,6 +230,7 @@ def test_get_commits_uses_repo_path_and_explicit_date_window(monkeypatch) -> Non
     assert commits == []
     assert calls[0] == ["git", "-C", "/workspace/app", "rev-parse", "--show-toplevel"]
     assert calls[1][:4] == ["git", "-C", "/workspace/app", "log"]
+    assert "-z" in calls[1]
     assert "--since=2026-01-01" in calls[1]
     assert "--until=2026-01-07" in calls[1]
     assert "--no-merges" not in calls[1]
@@ -170,7 +244,7 @@ def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
         calls.append(cmd)
         if cmd[-2:] == ["rev-parse", "--show-toplevel"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -186,6 +260,7 @@ def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
     assert commits == []
     log_cmd = calls[1]
     assert log_cmd[:4] == ["git", "-C", "/workspace/app", "log"]
+    assert "-z" in log_cmd
     assert "main..HEAD" in log_cmd
     assert "--author=Alice" in log_cmd
     assert "--no-merges" in log_cmd
@@ -202,28 +277,28 @@ def test_get_commits_fetches_multiple_authors_separately(monkeypatch) -> None:
             return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
         author_arg = next((part for part in cmd if part.startswith("--author=")), "")
         if author_arg == "--author=Kevin":
-            stdout = """---COMMIT---
-hash:abc123
-author:Kevin
-email:kevin@example.com
-date:2026-03-10T09:15:00+00:00
-subject:Add Kevin work
-body:
-1	0	src/kevin.py
-"""
+            stdout = _nul_log_record(
+                "abc123",
+                "Kevin",
+                "kevin@example.com",
+                "2026-03-10T09:15:00+00:00",
+                "Add Kevin work",
+                "",
+                b"1	0	src/kevin.py",
+            )
         elif author_arg == "--author=YusufRehan":
-            stdout = """---COMMIT---
-hash:def456
-author:YusufRehan
-email:yusuf@example.com
-date:2026-03-10T10:15:00+00:00
-subject:Add Yusuf work
-body:
-2	0	src/yusuf.py
-"""
+            stdout = _nul_log_record(
+                "def456",
+                "YusufRehan",
+                "yusuf@example.com",
+                "2026-03-10T10:15:00+00:00",
+                "Add Yusuf work",
+                "",
+                b"2	0	src/yusuf.py",
+            )
         else:
-            stdout = ""
-        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+            stdout = b""
+        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
