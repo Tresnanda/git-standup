@@ -33,3 +33,25 @@ def test_build_prompt_requests_markdown_when_asked() -> None:
 
     assert "Format the summary as Markdown" in prompt
     assert "Do NOT use Markdown syntax" not in prompt
+
+
+def test_build_prompt_warns_not_to_embellish_low_signal_commits() -> None:
+    prompt = _build_prompt(
+        {
+            "Alice": {
+                "2026-03-10": {
+                    "commits": [
+                        {
+                            "hash": "abc123",
+                            "subject": "wip",
+                            "quality": {"signal": "low"},
+                        }
+                    ]
+                }
+            }
+        }
+    )
+
+    assert "Do not embellish weak git evidence" in prompt
+    assert "When a commit has `quality.signal` set to `low`" in prompt
+    assert "say the commit message was vague instead of" in prompt

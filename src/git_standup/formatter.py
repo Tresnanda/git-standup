@@ -90,6 +90,9 @@ def build_markdown_output(
                     hash_short = commit.get("hash", "")[:8]
                     subject = commit.get("subject", "")
                     lines.append(f"- `{hash_short}` {subject}")
+                    quality_note = _format_quality_note(commit)
+                    if quality_note:
+                        lines.append(f"  - {quality_note}")
 
                     files = commit.get("files", [])
                     if files:
@@ -195,6 +198,9 @@ def build_changelog_output(
                     "  - Files omitted by `--max-files-per-commit`: "
                     f"{truncated.get('files_omitted', 0)}"
                 )
+            quality_note = _format_quality_note(commit)
+            if quality_note:
+                lines.append(f"  - {quality_note}")
         lines.append("")
 
     lines.extend(["## Change Stats", ""])
@@ -250,6 +256,17 @@ def _sorted_commit_files(commit: dict[str, Any]) -> list[dict[str, Any]]:
         ),
         reverse=True,
     )
+
+
+def _format_quality_note(commit: dict[str, Any]) -> str:
+    quality = commit.get("quality")
+    if not isinstance(quality, dict) or quality.get("signal") != "low":
+        return ""
+    reasons = quality.get("reasons", [])
+    if isinstance(reasons, list) and reasons:
+        reason_text = "; ".join(str(reason) for reason in reasons)
+        return f"⚠️ Low-signal commit message: {reason_text}."
+    return "⚠️ Low-signal commit message."
 
 
 def _format_commit_change_summary(files: list[dict[str, Any]]) -> str:
@@ -318,6 +335,9 @@ def build_text_output(
                     hash_short = commit.get("hash", "")[:8]
                     subject = commit.get("subject", "")
                     lines.append(f"    [{hash_short}] {subject}")
+                    quality_note = _format_quality_note(commit)
+                    if quality_note:
+                        lines.append(f"      {quality_note}")
 
                     for file_stat in commit.get("files", []):
                         path = file_stat.get("path", "")
@@ -407,6 +427,9 @@ def print_text_standup(
                 console.print(
                     f"    [{hash_short}] [bold]{subject}[/bold]"
                 )
+                quality_note = _format_quality_note(c)
+                if quality_note:
+                    console.print(f"      [yellow]{quality_note}[/yellow]")
 
                 # Show file changes
                 for f in c.get("files", []):

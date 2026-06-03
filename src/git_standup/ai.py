@@ -54,6 +54,16 @@ Generate a natural-language standup summary in a professional, friendly tone.
 - What work was done (organized by author/project area)
 - Notable changes or feature work
 - Bug fixes or maintenance
+
+Evidence rules:
+- Do not embellish weak git evidence into impressive-sounding accomplishments.
+- When a commit has `quality.signal` set to `low`, treat it as a low-signal or
+  placeholder commit message. Summarize only concrete file/body evidence and,
+  if there is not enough evidence, say the commit message was vague instead of
+  inventing intent.
+- Vague subjects like "wip", "fix", "update", "changes", "misc", or "tmp"
+  should not be rewritten as polished outcomes unless the body/files clearly
+  support that outcome.
 {metadata_section}
 
 COMMIT DATA:

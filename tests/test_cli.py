@@ -219,6 +219,28 @@ def test_markdown_mode_prints_paste_ready_summary(
     assert "- `abc123` Add authentication" in output
 
 
+def test_commit_data_marks_low_signal_subjects() -> None:
+    commits = _sample_commits()
+    commits[0]["subject"] = "wip"
+
+    data = cli._build_commit_data(commits)
+    commit = data["Alice"]["2026-03-10"]["commits"][0]
+
+    assert commit["quality"]["signal"] == "low"
+    assert "generic subject `wip`" in commit["quality"]["reasons"]
+    assert "do not embellish" in commit["quality"]["guidance"]
+
+
+def test_markdown_output_notes_low_signal_commit_messages() -> None:
+    data = _sample_commit_data("wip")
+
+    output = build_markdown_output(data)
+
+    assert "- `abc123` wip" in output
+    assert "Low-signal commit message" in output
+    assert "generic subject `wip`" in output
+
+
 def test_markdown_mode_formats_multiple_repositories() -> None:
     output = build_markdown_output(
         {
@@ -302,6 +324,22 @@ def test_changelog_mode_writes_to_output_file(
     assert "# Changelog" in output
     assert "## Fixes" in output
     assert "repair login redirect" in output
+
+
+def test_changelog_mode_notes_low_signal_commit_messages(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    commits = _sample_commits()
+    commits[0]["subject"] = "fix"
+    monkeypatch.setattr(cli, "get_commits", lambda **_: commits)
+
+    exit_code = cli.main(["--changelog"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Low-signal commit message" in output
+    assert "generic subject `fix`" in output
 
 
 def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1414,7 +1452,7 @@ def test_wizard_separator_prints_full_width_rule(
     monkeypatch.setattr(
         cli.shutil,
         "get_terminal_size",
-        lambda _fallback=(80, 24): os.terminal_size((40, 24)),
+        lambda fallback=(80, 24): os.terminal_size((40, 24)),
     )
 
     cli._wizard_separator()
