@@ -6,6 +6,98 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+_LOW_SIGNAL_SUBJECTS = {
+    "change",
+    "changes",
+    "checkpoint",
+    "commit",
+    "fix",
+    "fixed",
+    "misc",
+    "miscellaneous",
+    "save",
+    "stuff",
+    "temp",
+    "test",
+    "testing",
+    "tmp",
+    "todo",
+    "update",
+    "updates",
+    "wip",
+    "work",
+    "work in progress",
+}
+
+_LOW_SIGNAL_PREFIXES = {
+    "change",
+    "changes",
+    "fix",
+    "fixed",
+    "misc",
+    "save",
+    "temp",
+    "test",
+    "tmp",
+    "update",
+    "updates",
+    "wip",
+}
+
+_LOW_SIGNAL_OBJECTS = {
+    "change",
+    "changes",
+    "code",
+    "stuff",
+    "things",
+    "work",
+}
+
+
+def describe_commit_quality(commit: dict[str, Any]) -> dict[str, Any] | None:
+    """Return low-signal commit-message metadata, or None for normal commits.
+
+    The goal is not to judge whether the work was valuable. It only marks commit
+    messages that give the summarizer weak evidence, so AI output can avoid
+    dressing up placeholder history as polished accomplishments.
+    """
+    subject = str(commit.get("subject", "")).strip()
+    body = str(commit.get("body", "")).strip()
+    normalized = _normalize_subject(subject)
+    reasons: list[str] = []
+
+    if not subject:
+        reasons.append("missing commit subject")
+    elif normalized in _LOW_SIGNAL_SUBJECTS:
+        reasons.append(f"generic subject `{subject}`")
+    elif _is_low_signal_phrase(normalized):
+        reasons.append(f"vague subject `{subject}`")
+
+    if reasons and not body:
+        reasons.append("no commit body to clarify intent")
+
+    if not reasons:
+        return None
+
+    return {
+        "signal": "low",
+        "reasons": reasons,
+        "guidance": "Summarize only concrete file evidence; do not embellish this commit.",
+    }
+
+
+def _normalize_subject(subject: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", subject.lower()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _is_low_signal_phrase(normalized: str) -> bool:
+    parts = normalized.split()
+    if len(parts) != 2:
+        return False
+    first, second = parts
+    return first in _LOW_SIGNAL_PREFIXES and second in _LOW_SIGNAL_OBJECTS
+
 
 def get_repo_root(repo_path: str | None = None) -> str:
     """Get the root directory of the current git repository.

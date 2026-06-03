@@ -38,6 +38,7 @@ from git_standup.formatter import (
 )
 from git_standup.gitlog import (
     compute_stats,
+    describe_commit_quality,
     get_commits,
     group_by_author,
     group_by_date,
@@ -87,6 +88,9 @@ def _build_commit_data(
                 }
                 if c.get("truncated"):
                     item["truncated"] = c["truncated"]
+                quality = describe_commit_quality(c)
+                if quality:
+                    item["quality"] = quality
                 commit_items.append(item)
             date_data[date_key] = {
                 "commits": commit_items,
@@ -143,6 +147,18 @@ def _apply_output_budget(
         "files_omitted": files_omitted,
     }
     return budgeted_commits, metadata
+
+
+def _with_commit_quality(commits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach low-signal commit metadata to flat commit lists."""
+    annotated: list[dict[str, Any]] = []
+    for commit in commits:
+        item = dict(commit)
+        quality = describe_commit_quality(item)
+        if quality:
+            item["quality"] = quality
+        annotated.append(item)
+    return annotated
 
 
 def _with_json_metadata(
@@ -1668,7 +1684,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Warning: --ai has no effect with --changelog; changelog is always raw.",
                 file=sys.stderr,
             )
-        changelog = build_changelog_output(commits, budget_metadata)
+        changelog = build_changelog_output(_with_commit_quality(commits), budget_metadata)
         _emit_markdown(changelog, args.output)
         return 0
 

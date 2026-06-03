@@ -148,6 +148,14 @@ The wizard supports:
 
 In the wizard, `q` cancels. Do not treat cancellation as a selected default.
 
+## Quality Guardrails
+
+Recent git-standup versions mark placeholder commit subjects such as `wip`,
+`fix`, `update`, `changes`, `misc`, or `tmp` as low-signal in JSON/Markdown and
+in the AI prompt. Treat those notes as evidence limits, not as proof that the
+work was bad: summarize concrete file/body evidence, and do not turn vague git
+history into polished claims.
+
 ## Response Style
 
 When presenting a report:
@@ -156,5 +164,7 @@ When presenting a report:
 - Preserve authors and repository headings when reporting across multiple repos.
 - Mention the exact command used when helpful.
 - Avoid claiming work that is not represented in commits.
+- If the output flags low-signal commit messages, mention that the commit history
+  was vague rather than inventing stronger accomplishments.
 - If no commits are found, explain the likely filter that caused it: date range,
   author, repository path, branch, or path filters.

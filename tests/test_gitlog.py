@@ -3,6 +3,7 @@ import subprocess
 from git_standup.gitlog import (
     _parse_log_output,
     compute_stats,
+    describe_commit_quality,
     get_commits,
     group_by_author,
     group_by_date,
@@ -89,6 +90,20 @@ body:
     assert commits[0]["files"] == [
         {"path": "assets/demo.png", "insertions": 0, "deletions": 0}
     ]
+
+
+def test_describe_commit_quality_flags_generic_subjects() -> None:
+    quality = describe_commit_quality({"subject": "wip", "body": ""})
+
+    assert quality == {
+        "signal": "low",
+        "reasons": ["generic subject `wip`", "no commit body to clarify intent"],
+        "guidance": "Summarize only concrete file evidence; do not embellish this commit.",
+    }
+
+
+def test_describe_commit_quality_leaves_specific_subjects_unmarked() -> None:
+    assert describe_commit_quality({"subject": "Fix payment retry", "body": ""}) is None
 
 
 def test_grouping_and_stats_are_stable() -> None:

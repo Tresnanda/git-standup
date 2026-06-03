@@ -19,6 +19,7 @@ Generate standup-ready summaries from Git history.
 - Can hide merge commits with `--exclude-merges` for less noisy standups.
 - Writes summaries directly to files with `--output`.
 - Supports AI summaries through OpenAI-compatible chat-completion APIs.
+- Flags low-signal commit messages so vague history is not over-polished.
 - Works without AI by using `--no-ai`.
 - Can compare the current branch against a base branch.
 
@@ -287,6 +288,8 @@ git-standup \
 ```
 
 If AI generation fails, the command falls back to the local text summary and exits with a non-zero status so CI or scripts can detect the degraded path.
+
+AI summaries are evidence-aware. Placeholder subjects such as `wip`, `fix`, `update`, `changes`, `misc`, or `tmp` are marked as low-signal in the structured commit data, and the prompt tells the model to summarize only concrete body/file evidence instead of turning vague history into polished claims. Local text, Markdown, and changelog modes also surface a low-signal note when those commits appear.
 
 ## Common Workflows
 
