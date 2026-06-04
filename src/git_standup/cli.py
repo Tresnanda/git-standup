@@ -1870,6 +1870,7 @@ def main(argv: list[str] | None = None) -> int:
         multi_repo_commit_data: dict[str, Any] | None = None
         if args.remote_repos:
             repo_commits: list[tuple[str, list[dict[str, Any]]]] = []
+            repo_budget_metadata: dict[str, Any] = {}
             all_commits: list[dict[str, Any]] = []
             if args.remote_backend == "api":
                 validate_remote_api_options(
@@ -1888,11 +1889,13 @@ def main(argv: list[str] | None = None) -> int:
                         exclude_merges=args.exclude_merges,
                         include_prs=args.include_prs,
                     )
-                    fetched, _repo_budget_metadata = _apply_output_budget(
+                    fetched, metadata = _apply_output_budget(
                         fetched,
                         max_commits=args.max_commits,
                         max_files_per_commit=args.max_files_per_commit,
                     )
+                    if metadata is not None:
+                        repo_budget_metadata[repo_name] = metadata
                     for commit in fetched:
                         commit["repository"] = repo_name
                     repo_commits.append((repo_name, fetched))
@@ -1914,11 +1917,13 @@ def main(argv: list[str] | None = None) -> int:
                             exclude_merges=args.exclude_merges,
                             pathspecs=args.pathspecs,
                         )
-                        fetched, _repo_budget_metadata = _apply_output_budget(
+                        fetched, metadata = _apply_output_budget(
                             fetched,
                             max_commits=args.max_commits,
                             max_files_per_commit=args.max_files_per_commit,
                         )
+                        if metadata is not None:
+                            repo_budget_metadata[repo_name] = metadata
                         if args.include_prs:
                             fetched = enrich_commits_with_prs(
                                 fetched,
@@ -1931,6 +1936,8 @@ def main(argv: list[str] | None = None) -> int:
                         all_commits.extend(fetched)
             commits = all_commits
             multi_repo_commit_data = _build_multi_repo_commit_data(repo_commits)
+            if repo_budget_metadata:
+                budget_metadata = {"repositories": repo_budget_metadata}
         else:
             commits = get_commits(
                 days=args.days,
