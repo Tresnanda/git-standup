@@ -49,6 +49,7 @@ _CONVENTIONAL_SUBJECT_RE = re.compile(
 )
 
 _REPOSITORIES_KEY = "_repositories"
+TEAM_DIGEST_TEMPLATES = ("slack", "github", "jira", "linear")
 
 
 def _repository_sections(
@@ -307,6 +308,217 @@ def build_changelog_output(
         lines.append(f"- Top files: {top_files}")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def build_team_digest_output(
+    commit_data: dict[str, Any],
+    *,
+    template: str = "slack",
+) -> str:
+    """Build a non-AI team workflow digest grouped by owner/author."""
+    if template not in TEAM_DIGEST_TEMPLATES:
+        choices = ", ".join(TEAM_DIGEST_TEMPLATES)
+        raise ValueError(f"unknown team digest template: {template!r} (choose {choices})")
+
+    template_label = {
+        "github": "GitHub",
+        "jira": "Jira",
+        "linear": "Linear",
+        "slack": "Slack",
+    }[template]
+    owners = _team_digest_owners(commit_data)
+    risks: list[dict[str, Any]] = []
+    questions: list[str] = []
+    lines = ["# Team Workflow Digest", "", f"_Template: {template_label}_", ""]
+
+    for owner, owner_data in owners.items():
+        commits = owner_data["commits"]
+        files = owner_data["files"]
+        insertions = owner_data["insertions"]
+        deletions = owner_data["deletions"]
+        summary = (
+            f"- Commits: {len(commits)} · Files: {len(files)} · "
+            f"Lines: +{insertions}/-{deletions}"
+        )
+        lines.extend(
+            [
+                f"## Owner: {owner}",
+                "",
+                summary,
+                "- Work evidence:",
+            ]
+        )
+        for item in commits:
+            commit = item["commit"]
+            hash_short = _commit_hash_short(commit)
+            subject = str(commit.get("subject") or "Untitled commit")
+            repo_note = f" · {item['repo']}" if item.get("repo") else ""
+            lines.append(f"  - `{hash_short}` {subject} ({item['date']}{repo_note})")
+
+            pr_note = _format_pull_request_note(commit, markdown=True)
+            if pr_note:
+                lines.append(f"    - {pr_note}")
+                question = _team_digest_pr_question(owner, commit)
+                if question:
+                    questions.append(question)
+            for issue_note in _format_issue_notes(commit):
+                lines.append(f"    - {issue_note}")
+                question = _team_digest_issue_question(owner, issue_note)
+                if question:
+                    questions.append(question)
+
+            file_highlights = _format_file_highlights(_sorted_commit_files(commit), limit=2)
+            if file_highlights:
+                lines.append(f"    - Files: {file_highlights}")
+
+            risk_reasons = _team_digest_risk_reasons(commit)
+            if risk_reasons:
+                risks.append({"owner": owner, "commit": commit, "reasons": risk_reasons})
+                questions.append(_team_digest_risk_question(owner, commit, risk_reasons))
+        lines.append("")
+
+    lines.extend(["## Risk / Blocker Radar", ""])
+    if risks:
+        for risk in risks:
+            commit = risk["commit"]
+            lines.append(
+                f"- {risk['owner']}: `{_commit_hash_short(commit)}` "
+                f"{commit.get('subject', 'Untitled commit')} — "
+                f"{_risk_reason_text(risk['reasons'])}"
+            )
+    else:
+        lines.append("- No obvious WIP/revert/fix/low-signal risks found in the selected commits.")
+    lines.append("")
+
+    lines.extend(["## Follow-up Questions", ""])
+    deduped_questions = _dedupe_preserving_order(questions)
+    if deduped_questions:
+        for question in deduped_questions[:8]:
+            lines.append(f"- {question}")
+    else:
+        lines.append("- Any commits that need review, rollout notes, or owner confirmation?")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _team_digest_owners(commit_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    owners: dict[str, dict[str, Any]] = {}
+    for repo_name, repo_data in _repository_sections(commit_data):
+        for author, days in repo_data.items():
+            owner_data = owners.setdefault(
+                str(author),
+                {"commits": [], "files": set(), "insertions": 0, "deletions": 0},
+            )
+            for date_key, day_data in days.items():
+                for commit in day_data.get("commits", []):
+                    owner_data["commits"].append(
+                        {"repo": repo_name, "date": str(date_key), "commit": commit}
+                    )
+                    for file_stat in commit.get("files", []):
+                        path = str(file_stat.get("path") or "unknown")
+                        owner_data["files"].add(
+                            f"{repo_name}:{path}" if repo_name else path
+                        )
+                        owner_data["insertions"] += int(file_stat.get("insertions", 0) or 0)
+                        owner_data["deletions"] += int(file_stat.get("deletions", 0) or 0)
+    return owners
+
+
+def _commit_hash_short(commit: dict[str, Any]) -> str:
+    return str(commit.get("hash", ""))[:8]
+
+
+def _format_issue_notes(commit: dict[str, Any]) -> list[str]:
+    notes: list[str] = []
+    issues = commit.get("issues")
+    if isinstance(issues, list):
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            issue_id = str(issue.get("id") or issue.get("number") or "").strip()
+            url = str(issue.get("url") or "").strip()
+            title = str(issue.get("title") or "").strip()
+            if not issue_id and not url:
+                continue
+            label = issue_id or url
+            if title:
+                label = f"{label} {title}"
+            notes.append(f"Issue: [{label}]({url})" if url else f"Issue: {label}")
+
+    text = f"{commit.get('subject', '')}\n{commit.get('body', '')}"
+    existing_urls = {note.partition("(")[2].rstrip(")") for note in notes}
+    for url in re.findall(r"https?://\S+", text):
+        clean_url = url.rstrip(".)],")
+        if clean_url in existing_urls:
+            continue
+        if any(marker in clean_url.lower() for marker in ("/issues/", "/browse/", "linear.app")):
+            notes.append(f"Issue: [{clean_url}]({clean_url})")
+    return notes
+
+
+def _team_digest_risk_reasons(commit: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    quality = commit.get("quality")
+    if isinstance(quality, dict) and quality.get("signal") == "low":
+        reasons.append("low-signal")
+
+    text = f"{commit.get('subject', '')}\n{commit.get('body', '')}".lower()
+    keyword_patterns = (
+        ("wip", r"\b(?:wip|work in progress|blocked?|blocker)\b"),
+        ("revert", r"\b(?:revert|reverted|reverting|rollback)\b"),
+        ("fix", r"\b(?:fix|fixes|fixed|hotfix|flaky)\b"),
+    )
+    for keyword, pattern in keyword_patterns:
+        if re.search(pattern, text):
+            reasons.append(f"keyword: {keyword}")
+    return reasons
+
+
+def _risk_reason_text(reasons: list[str]) -> str:
+    return ", ".join(reasons)
+
+
+def _team_digest_pr_question(owner: str, commit: dict[str, Any]) -> str:
+    pull_request = commit.get("pull_request")
+    if not isinstance(pull_request, dict) or pull_request.get("number") is None:
+        return ""
+    title = str(pull_request.get("title") or "").strip()
+    title_text = f" ({title})" if title else ""
+    return (
+        f"{owner}: Is PR #{pull_request['number']}{title_text} "
+        "ready for review, merge, or follow-up?"
+    )
+
+
+def _team_digest_issue_question(owner: str, issue_note: str) -> str:
+    match = re.search(r"\[([^\]]+)\]", issue_note)
+    issue_label = match.group(1).split()[0] if match else issue_note.replace("Issue: ", "")
+    return f"{owner}: Does {issue_label} need status, owner, or acceptance follow-up?"
+
+
+def _team_digest_risk_question(
+    owner: str,
+    commit: dict[str, Any],
+    reasons: list[str],
+) -> str:
+    hash_short = _commit_hash_short(commit)
+    if any(reason == "keyword: wip" for reason in reasons):
+        return f"{owner}: Is `{hash_short}` still in progress or blocking handoff?"
+    if any(reason == "keyword: revert" for reason in reasons):
+        return f"{owner}: Does `{hash_short}` need rollback context or follow-up remediation?"
+    if any(reason == "keyword: fix" for reason in reasons):
+        return f"{owner}: What validation confirms `{hash_short}` fixed the issue?"
+    return f"{owner}: Can `{hash_short}` be clarified for reviewer or handoff context?"
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
 
 
 def _changelog_commit_summary(commit: dict[str, Any]) -> tuple[str, str, bool]:
