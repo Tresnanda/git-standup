@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from git_standup import cli
+from git_standup import cli, github_api
 from git_standup.formatter import build_markdown_output, build_stats_output
 
 
@@ -251,6 +251,152 @@ def test_json_mode_groups_multiple_remote_repositories(
     ] == "Report Tresnanda__api"
 
 
+def test_remote_api_backend_uses_github_api_without_cloning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    api_calls: list[tuple[str, dict[str, str | int], list[str]]] = []
+
+    def fail_clone(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("API backend must not clone remote repositories")
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        api_calls.append((endpoint, params or {}, headers or []))
+        if endpoint == "/repos/Tresnanda/api/commits":
+            assert params is not None
+            assert params["since"] == "2026-03-01T00:00:00Z"
+            assert params["until"] == "2026-03-11T23:59:59Z"
+            return [
+                {
+                    "sha": "abcdef1234567890",
+                    "parents": [{"sha": "parent"}],
+                    "author": {"login": "alicehub"},
+                    "commit": {
+                        "author": {
+                            "name": "Alice",
+                            "email": "alice@example.com",
+                            "date": "2026-03-10T09:15:00Z",
+                        },
+                        "message": "Add API backend\n\nFetch commits without cloning.",
+                    },
+                },
+                {
+                    "sha": "merge123",
+                    "parents": [{"sha": "p1"}, {"sha": "p2"}],
+                    "commit": {
+                        "author": {
+                            "name": "Alice",
+                            "email": "alice@example.com",
+                            "date": "2026-03-10T10:15:00Z",
+                        },
+                        "message": "Merge pull request #99",
+                    },
+                },
+            ]
+        if endpoint == "/repos/Tresnanda/api/commits/abcdef1234567890":
+            return {
+                "sha": "abcdef1234567890",
+                "author": {"login": "alicehub"},
+                "commit": {
+                    "author": {
+                        "name": "Alice",
+                        "email": "alice@example.com",
+                        "date": "2026-03-10T09:15:00Z",
+                    },
+                    "message": "Add API backend\n\nFetch commits without cloning.",
+                },
+                "files": [
+                    {"filename": "src/github_api.py", "additions": 40, "deletions": 1},
+                    {"filename": "tests/test_cli.py", "additions": 20, "deletions": 0},
+                ],
+            }
+        if endpoint == "/repos/Tresnanda/api/commits/abcdef1234567890/pulls":
+            assert "Accept: application/vnd.github.groot-preview+json" in (headers or [])
+            return [
+                {
+                    "number": 42,
+                    "title": "Add no-clone API backend",
+                    "html_url": "https://github.com/Tresnanda/api/pull/42",
+                }
+            ]
+        raise AssertionError(f"unexpected API endpoint: {endpoint}")
+
+    monkeypatch.setattr(cli, "_clone_remote_repo", fail_clone)
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-backend",
+            "api",
+            "--json",
+            "--since",
+            "2026-03-01",
+            "--until",
+            "2026-03-11",
+            "--author",
+            "Alice",
+            "--exclude-merges",
+            "--max-commits",
+            "1",
+            "--include-prs",
+        ]
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in api_calls] == [
+        "/repos/Tresnanda/api/commits",
+        "/repos/Tresnanda/api/commits/abcdef1234567890",
+        "/repos/Tresnanda/api/commits/abcdef1234567890/pulls",
+    ]
+    output = json.loads(capsys.readouterr().out)
+    repo_output = output["_repositories"]["Tresnanda/api"]
+    commit = repo_output["Alice"]["2026-03-10"]["commits"][0]
+    assert commit["hash"] == "abcdef1234567890"
+    assert commit["subject"] == "Add API backend"
+    assert commit["body"] == "Fetch commits without cloning."
+    assert commit["files"] == [
+        {"path": "src/github_api.py", "insertions": 40, "deletions": 1},
+        {"path": "tests/test_cli.py", "insertions": 20, "deletions": 0},
+    ]
+    assert commit["pull_request"] == {
+        "number": 42,
+        "source": "github-api",
+        "title": "Add no-clone API backend",
+        "url": "https://github.com/Tresnanda/api/pull/42",
+    }
+    assert repo_output["Alice"]["2026-03-10"]["stats"] == {
+        "total_commits": 1,
+        "total_insertions": 60,
+        "total_deletions": 1,
+        "total_files": 2,
+        "files_changed": ["src/github_api.py", "tests/test_cli.py"],
+    }
+
+
+def test_remote_api_backend_rejects_git_native_filters(capsys) -> None:
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-backend",
+            "api",
+            "--path",
+            "src",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "--remote-backend api does not support --path/--pathspec" in capsys.readouterr().err
+
+
 def test_markdown_mode_prints_paste_ready_summary(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -476,6 +622,7 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
 def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
     default = cli.parse_args([])
     assert default.exclude_merges is False
+    assert default.remote_backend == "clone"
 
     me = cli.parse_args(["me"])
     assert me.author == "me"
