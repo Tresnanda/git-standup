@@ -1,6 +1,36 @@
 import json
 
-from git_standup.ai import _build_prompt, _chat_completions_url, _harness_command
+from git_standup.ai import (
+    _build_prompt,
+    _chat_completions_url,
+    _harness_command,
+    generate_standup,
+)
+
+
+class _RecordingClient:
+    calls = []
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        pass
+
+    def post(self, url, *, headers, json):
+        self.calls.append({"url": url, "headers": headers, "json": json})
+        return _FakeCompletionResponse()
+
+
+class _FakeCompletionResponse:
+    def raise_for_status(self) -> None:
+        pass
+
+    def json(self):
+        return {"choices": [{"message": {"content": "Standup summary"}}]}
 
 
 def test_build_prompt_includes_budget_metadata() -> None:
@@ -55,6 +85,46 @@ def test_build_prompt_warns_not_to_embellish_low_signal_commits() -> None:
     assert "Do not embellish weak git evidence" in prompt
     assert "When a commit has `quality.signal` set to `low`" in prompt
     assert "say the commit message was vague instead of" in prompt
+
+
+def test_generate_standup_uses_api_key_header_for_azure_deployments(monkeypatch) -> None:
+    _RecordingClient.calls = []
+    monkeypatch.setattr("git_standup.ai.httpx.Client", _RecordingClient)
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2024-06-01")
+
+    result = generate_standup(
+        {"Alice": {}},
+        api_key="test-api-key",
+        base_url="https://example.openai.azure.com/openai/deployments/standup-gpt",
+    )
+
+    assert result == "Standup summary"
+    assert len(_RecordingClient.calls) == 1
+    request = _RecordingClient.calls[0]
+    assert request["url"] == (
+        "https://example.openai.azure.com/openai/deployments/standup-gpt"
+        "/chat/completions?api-version=2024-06-01"
+    )
+    assert request["headers"]["api-key"] == "test-api-key"
+    assert "Authorization" not in request["headers"]
+
+
+def test_generate_standup_keeps_bearer_auth_for_openai_compatible_providers(monkeypatch) -> None:
+    _RecordingClient.calls = []
+    monkeypatch.setattr("git_standup.ai.httpx.Client", _RecordingClient)
+
+    result = generate_standup(
+        {"Alice": {}},
+        api_key="test-api-key",
+        base_url="https://openai-compatible.example/v1",
+    )
+
+    assert result == "Standup summary"
+    assert len(_RecordingClient.calls) == 1
+    request = _RecordingClient.calls[0]
+    assert request["url"] == "https://openai-compatible.example/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer test-api-key"
+    assert "api-key" not in request["headers"]
 
 
 def test_chat_completions_url_supports_azure_deployment_urls(monkeypatch) -> None:
