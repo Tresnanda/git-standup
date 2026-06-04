@@ -360,7 +360,13 @@ The JSON output is grouped as `author -> date -> commits/stats`, making it easy 
 git-standup --remote-repo Tresnanda/api --remote-repo Tresnanda/web --days 7 --markdown
 ```
 
-Remote reports clone temporary copies for the run, then format the output with a repository heading for each selected project.
+Remote reports clone temporary copies for the run by default, then format the output with a repository heading for each selected project. To avoid local clones, opt in to GitHub API mode (requires authenticated `gh`):
+
+```bash
+git-standup --remote-repo Tresnanda/api --remote-backend api --days 7 --json --no-ai
+```
+
+API mode supports date ranges, author matching, merge exclusion, commit budgets, changed-file stats, and best-effort PR links. Git-native `--base-branch` and `--path/--pathspec` filters require clone mode.
 
 ### Paste-Ready Markdown
 
@@ -383,6 +389,7 @@ Changelog mode is always non-AI. It groups conventional commits into Features, F
 ```text
 usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--remote-repo OWNER/NAME]
+                   [--remote-backend {clone,api}]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
                    [--base-branch BASE_BRANCH] [--max-commits MAX_COMMITS]
                    [--max-files-per-commit MAX_FILES_PER_COMMIT]
@@ -399,8 +406,11 @@ options:
   --days DAYS          Number of days of Git history to include. Must be positive.
   --repo PATH          Path to the Git repository to analyze.
   --remote-repo OWNER/NAME
-                       GitHub repository to clone and include in the report.
-                       Repeat for multiple repos.
+                       GitHub repository to include in the report. Repeat for
+                       multiple repos.
+  --remote-backend {clone,api}
+                       Backend for --remote-repo: clone repositories locally
+                       (default) or query GitHub through gh api without cloning.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.
   --until DATE         End date for the report window, in YYYY-MM-DD format.
   --author AUTHOR      Filter by author. Use "me" for the current Git user.
