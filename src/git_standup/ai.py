@@ -13,10 +13,15 @@ import httpx
 _MAX_PROMPT_CHARS = 120_000
 
 
+def _is_azure_deployment_url(url_base: str) -> bool:
+    """Return whether the URL targets an Azure OpenAI deployment endpoint."""
+    return "/openai/deployments/" in url_base.rstrip("/").lower()
+
+
 def _chat_completions_url(url_base: str) -> str:
     """Build a chat completions URL for OpenAI-compatible and Azure deployments."""
     base = url_base.rstrip("/")
-    if "/openai/deployments/" not in base:
+    if not _is_azure_deployment_url(base):
         return f"{base}/chat/completions"
 
     if "/chat/completions" not in base:
@@ -26,6 +31,16 @@ def _chat_completions_url(url_base: str) -> str:
 
     api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-06-01")
     return f"{base}?api-version={api_version}"
+
+
+def _request_headers(api_key: str, url_base: str) -> dict[str, str]:
+    """Build provider-aware auth headers for chat completion requests."""
+    headers = {"Content-Type": "application/json"}
+    if _is_azure_deployment_url(url_base):
+        headers["api-key"] = api_key
+    else:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 def _format_instruction(output_format: str) -> str:
@@ -130,10 +145,7 @@ def generate_standup(
     if len(prompt) > _MAX_PROMPT_CHARS:
         prompt = prompt[:_MAX_PROMPT_CHARS] + "\n\n[truncated due to length]"
 
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
+    headers = _request_headers(key, url_base)
 
     body = {
         "model": model,

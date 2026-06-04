@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from git_standup import cli
+from git_standup import cli, github_api
 from git_standup.formatter import build_markdown_output, build_stats_output
 
 
@@ -25,13 +25,13 @@ def isolated_user_ai_settings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None
         "TOGETHER_API_KEY",
         "PERPLEXITY_API_KEY",
         "XAI_API_KEY",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_DEPLOYMENT",
-    "CURSOR_API_KEY",
-    "KIRO_API_KEY",
-    "AMP_API_KEY",
-):
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_DEPLOYMENT",
+        "CURSOR_API_KEY",
+        "KIRO_API_KEY",
+        "AMP_API_KEY",
+    ):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -278,6 +278,32 @@ def _budgeted_remote_commits(repo_path: object) -> list[dict[str, object]]:
     ]
 
 
+def _budgeted_api_commits(repo_name: str) -> list[dict[str, object]]:
+    return [
+        {
+            "hash": f"{repo_name}-1",
+            "author_name": "Alice",
+            "author_email": "alice@example.com",
+            "date": "2026-03-10T09:15:00+00:00",
+            "subject": f"Report {repo_name} first",
+            "body": "",
+            "files": [
+                {"path": f"{repo_name}/app.py", "insertions": 12, "deletions": 2},
+                {"path": f"{repo_name}/test_app.py", "insertions": 4, "deletions": 0},
+            ],
+        },
+        {
+            "hash": f"{repo_name}-2",
+            "author_name": "Alice",
+            "author_email": "alice@example.com",
+            "date": "2026-03-10T10:15:00+00:00",
+            "subject": f"Report {repo_name} second",
+            "body": "",
+            "files": [{"path": f"{repo_name}/docs.md", "insertions": 2, "deletions": 0}],
+        },
+    ]
+
+
 def test_multi_remote_json_includes_per_repository_budget_metadata(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -292,7 +318,6 @@ def test_multi_remote_json_includes_per_repository_budget_metadata(
     monkeypatch.setattr(cli, "_clone_remote_repo", fake_clone)
     monkeypatch.setattr(cli.tempfile, "TemporaryDirectory", lambda: _TempDir(tmp_path))
     monkeypatch.setattr(cli, "get_commits", fake_get_commits)
-
     exit_code = cli.main(
         [
             "--remote-repo",
@@ -402,6 +427,195 @@ def test_multi_remote_ai_receives_per_repository_budget_metadata(
     commit_data = captured["commit_data"]
     assert isinstance(commit_data, dict)
     assert set(commit_data["_repositories"]) == {"Tresnanda/api", "Tresnanda/web"}
+
+
+def test_multi_remote_api_json_includes_per_repository_budget_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    def fail_clone(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("API backend must not clone remote repositories")
+
+    def fake_get_remote_commits(repo: str, **_kwargs: object) -> list[dict[str, object]]:
+        return _budgeted_api_commits(repo)
+
+    monkeypatch.setattr(cli, "_clone_remote_repo", fail_clone)
+    monkeypatch.setattr(cli, "get_remote_commits", fake_get_remote_commits)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-backend",
+            "api",
+            "--max-commits",
+            "1",
+            "--max-files-per-commit",
+            "1",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"]["repositories"]["Tresnanda/api"] == {
+        "truncated": True,
+        "limits": {"max_commits": 1, "max_files_per_commit": 1},
+        "commits_included": 1,
+        "commits_truncated": True,
+        "more_commits_available": True,
+        "files_truncated": True,
+        "commits_with_files_truncated": 1,
+        "files_omitted": 1,
+    }
+    commits = output["_repositories"]["Tresnanda/api"]["Alice"]["2026-03-10"]["commits"]
+    assert [commit["hash"] for commit in commits] == ["Tresnanda/api-1"]
+
+
+def test_remote_api_backend_uses_github_api_without_cloning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    api_calls: list[tuple[str, dict[str, str | int], list[str]]] = []
+
+    def fail_clone(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("API backend must not clone remote repositories")
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        api_calls.append((endpoint, params or {}, headers or []))
+        if endpoint == "/repos/Tresnanda/api/commits":
+            assert params is not None
+            assert params["since"] == "2026-03-01T00:00:00Z"
+            assert params["until"] == "2026-03-11T23:59:59Z"
+            return [
+                {
+                    "sha": "abcdef1234567890",
+                    "parents": [{"sha": "parent"}],
+                    "author": {"login": "alicehub"},
+                    "commit": {
+                        "author": {
+                            "name": "Alice",
+                            "email": "alice@example.com",
+                            "date": "2026-03-10T09:15:00Z",
+                        },
+                        "message": "Add API backend\n\nFetch commits without cloning.",
+                    },
+                },
+                {
+                    "sha": "merge123",
+                    "parents": [{"sha": "p1"}, {"sha": "p2"}],
+                    "commit": {
+                        "author": {
+                            "name": "Alice",
+                            "email": "alice@example.com",
+                            "date": "2026-03-10T10:15:00Z",
+                        },
+                        "message": "Merge pull request #99",
+                    },
+                },
+            ]
+        if endpoint == "/repos/Tresnanda/api/commits/abcdef1234567890":
+            return {
+                "sha": "abcdef1234567890",
+                "author": {"login": "alicehub"},
+                "commit": {
+                    "author": {
+                        "name": "Alice",
+                        "email": "alice@example.com",
+                        "date": "2026-03-10T09:15:00Z",
+                    },
+                    "message": "Add API backend\n\nFetch commits without cloning.",
+                },
+                "files": [
+                    {"filename": "src/github_api.py", "additions": 40, "deletions": 1},
+                    {"filename": "tests/test_cli.py", "additions": 20, "deletions": 0},
+                ],
+            }
+        if endpoint == "/repos/Tresnanda/api/commits/abcdef1234567890/pulls":
+            assert "Accept: application/vnd.github.groot-preview+json" in (headers or [])
+            return [
+                {
+                    "number": 42,
+                    "title": "Add no-clone API backend",
+                    "html_url": "https://github.com/Tresnanda/api/pull/42",
+                }
+            ]
+        raise AssertionError(f"unexpected API endpoint: {endpoint}")
+
+    monkeypatch.setattr(cli, "_clone_remote_repo", fail_clone)
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-backend",
+            "api",
+            "--json",
+            "--since",
+            "2026-03-01",
+            "--until",
+            "2026-03-11",
+            "--author",
+            "Alice",
+            "--exclude-merges",
+            "--max-commits",
+            "1",
+            "--include-prs",
+        ]
+    )
+
+    assert exit_code == 0
+    assert [call[0] for call in api_calls] == [
+        "/repos/Tresnanda/api/commits",
+        "/repos/Tresnanda/api/commits/abcdef1234567890",
+        "/repos/Tresnanda/api/commits/abcdef1234567890/pulls",
+    ]
+    output = json.loads(capsys.readouterr().out)
+    repo_output = output["_repositories"]["Tresnanda/api"]
+    commit = repo_output["Alice"]["2026-03-10"]["commits"][0]
+    assert commit["hash"] == "abcdef1234567890"
+    assert commit["subject"] == "Add API backend"
+    assert commit["body"] == "Fetch commits without cloning."
+    assert commit["files"] == [
+        {"path": "src/github_api.py", "insertions": 40, "deletions": 1},
+        {"path": "tests/test_cli.py", "insertions": 20, "deletions": 0},
+    ]
+    assert commit["pull_request"] == {
+        "number": 42,
+        "source": "github-api",
+        "title": "Add no-clone API backend",
+        "url": "https://github.com/Tresnanda/api/pull/42",
+    }
+    assert repo_output["Alice"]["2026-03-10"]["stats"] == {
+        "total_commits": 1,
+        "total_insertions": 60,
+        "total_deletions": 1,
+        "total_files": 2,
+        "files_changed": ["src/github_api.py", "tests/test_cli.py"],
+    }
+
+
+def test_remote_api_backend_rejects_git_native_filters(capsys) -> None:
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-backend",
+            "api",
+            "--path",
+            "src",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "--remote-backend api does not support --path/--pathspec" in capsys.readouterr().err
 
 
 def test_markdown_mode_prints_paste_ready_summary(
@@ -629,6 +843,7 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
 def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
     default = cli.parse_args([])
     assert default.exclude_merges is False
+    assert default.remote_backend == "clone"
 
     me = cli.parse_args(["me"])
     assert me.author == "me"

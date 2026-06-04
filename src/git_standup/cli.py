@@ -44,6 +44,7 @@ from git_standup.formatter import (
     print_ai_standup,
     print_text_standup,
 )
+from git_standup.github_api import get_remote_commits, validate_remote_api_options
 from git_standup.gitlog import (
     compute_stats,
     describe_commit_quality,
@@ -1590,6 +1591,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --days 1            # Yesterday only\n"
         "  git-standup --repo ../api       # Run against another repository\n"
         "  git-standup --remote-repo owner/api --remote-repo owner/web\n"
+        "  git-standup --remote-repo owner/api --remote-backend api --json\n"
         "  git-standup --path src --path tests  # Only commits touching paths\n"
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
         "  git-standup --author me         # My commits only\n"
@@ -1635,7 +1637,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=None,
         metavar="OWNER/NAME",
-        help="GitHub repository to clone and include in the report. Repeat for multiple repos.",
+        help="GitHub repository to include in the report. Repeat for multiple repos.",
+    )
+    parser.add_argument(
+        "--remote-backend",
+        choices=("clone", "api"),
+        default="clone",
+        help=(
+            "Backend for --remote-repo: clone repositories locally (default) or "
+            "query GitHub through gh api without cloning"
+        ),
     )
     parser.add_argument(
         "--since",
@@ -1861,21 +1872,22 @@ def main(argv: list[str] | None = None) -> int:
             repo_commits: list[tuple[str, list[dict[str, Any]]]] = []
             repo_budget_metadata: dict[str, Any] = {}
             all_commits: list[dict[str, Any]] = []
-            with tempfile.TemporaryDirectory() as temp_dir:
-                parent = Path(temp_dir)
+            if args.remote_backend == "api":
+                validate_remote_api_options(
+                    base_branch=args.base_branch,
+                    pathspecs=args.pathspecs,
+                )
                 for remote_repo in args.remote_repos:
-                    repo_path = _clone_remote_repo(remote_repo, parent)
                     repo_name = _remote_repo_label(remote_repo)
-                    fetched = get_commits(
+                    fetched = get_remote_commits(
+                        remote_repo,
                         days=args.days,
                         author=args.author,
-                        base_branch=args.base_branch,
-                        repo_path=str(repo_path),
                         since=args.since,
                         until=args.until,
                         max_commits=commit_fetch_limit,
                         exclude_merges=args.exclude_merges,
-                        pathspecs=args.pathspecs,
+                        include_prs=args.include_prs,
                     )
                     fetched, metadata = _apply_output_budget(
                         fetched,
@@ -1884,16 +1896,44 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if metadata is not None:
                         repo_budget_metadata[repo_name] = metadata
-                    if args.include_prs:
-                        fetched = enrich_commits_with_prs(
-                            fetched,
-                            repo_path=str(repo_path),
-                            query_github=True,
-                        )
                     for commit in fetched:
                         commit["repository"] = repo_name
                     repo_commits.append((repo_name, fetched))
                     all_commits.extend(fetched)
+            else:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    parent = Path(temp_dir)
+                    for remote_repo in args.remote_repos:
+                        repo_path = _clone_remote_repo(remote_repo, parent)
+                        repo_name = _remote_repo_label(remote_repo)
+                        fetched = get_commits(
+                            days=args.days,
+                            author=args.author,
+                            base_branch=args.base_branch,
+                            repo_path=str(repo_path),
+                            since=args.since,
+                            until=args.until,
+                            max_commits=commit_fetch_limit,
+                            exclude_merges=args.exclude_merges,
+                            pathspecs=args.pathspecs,
+                        )
+                        fetched, metadata = _apply_output_budget(
+                            fetched,
+                            max_commits=args.max_commits,
+                            max_files_per_commit=args.max_files_per_commit,
+                        )
+                        if metadata is not None:
+                            repo_budget_metadata[repo_name] = metadata
+                        if args.include_prs:
+                            fetched = enrich_commits_with_prs(
+                                fetched,
+                                repo_path=str(repo_path),
+                                query_github=True,
+                            )
+                        for commit in fetched:
+                            commit["repository"] = repo_name
+                        repo_commits.append((repo_name, fetched))
+                        all_commits.extend(fetched)
             commits = all_commits
             multi_repo_commit_data = _build_multi_repo_commit_data(repo_commits)
             if repo_budget_metadata:
