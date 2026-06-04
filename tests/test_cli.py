@@ -251,6 +251,159 @@ def test_json_mode_groups_multiple_remote_repositories(
     ] == "Report Tresnanda__api"
 
 
+def _budgeted_remote_commits(repo_path: object) -> list[dict[str, object]]:
+    repo_name = Path(str(repo_path)).name
+    return [
+        {
+            "hash": f"{repo_name}-1",
+            "author_name": "Alice",
+            "author_email": "alice@example.com",
+            "date": "2026-03-10T09:15:00+00:00",
+            "subject": f"Report {repo_name} first",
+            "body": "",
+            "files": [
+                {"path": f"{repo_name}/app.py", "insertions": 12, "deletions": 2},
+                {"path": f"{repo_name}/test_app.py", "insertions": 4, "deletions": 0},
+            ],
+        },
+        {
+            "hash": f"{repo_name}-2",
+            "author_name": "Alice",
+            "author_email": "alice@example.com",
+            "date": "2026-03-10T10:15:00+00:00",
+            "subject": f"Report {repo_name} second",
+            "body": "",
+            "files": [{"path": f"{repo_name}/docs.md", "insertions": 2, "deletions": 0}],
+        },
+    ]
+
+
+def test_multi_remote_json_includes_per_repository_budget_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    tmp_path,
+) -> None:
+    def fake_clone(remote: str, parent: Path) -> Path:
+        return parent / remote.replace("/", "__")
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        return _budgeted_remote_commits(kwargs["repo_path"])
+
+    monkeypatch.setattr(cli, "_clone_remote_repo", fake_clone)
+    monkeypatch.setattr(cli.tempfile, "TemporaryDirectory", lambda: _TempDir(tmp_path))
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-repo",
+            "Tresnanda/web",
+            "--max-commits",
+            "1",
+            "--max-files-per-commit",
+            "1",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"]["repositories"] == {
+        "Tresnanda/api": {
+            "truncated": True,
+            "limits": {"max_commits": 1, "max_files_per_commit": 1},
+            "commits_included": 1,
+            "commits_truncated": True,
+            "more_commits_available": True,
+            "files_truncated": True,
+            "commits_with_files_truncated": 1,
+            "files_omitted": 1,
+        },
+        "Tresnanda/web": {
+            "truncated": True,
+            "limits": {"max_commits": 1, "max_files_per_commit": 1},
+            "commits_included": 1,
+            "commits_truncated": True,
+            "more_commits_available": True,
+            "files_truncated": True,
+            "commits_with_files_truncated": 1,
+            "files_omitted": 1,
+        },
+    }
+    api_commits = output["_repositories"]["Tresnanda/api"]["Alice"]["2026-03-10"]["commits"]
+    assert [commit["hash"] for commit in api_commits] == ["Tresnanda__api-1"]
+    assert api_commits[0]["files"] == [
+        {"path": "Tresnanda__api/app.py", "insertions": 12, "deletions": 2}
+    ]
+    assert api_commits[0]["truncated"] == {"files": True, "files_omitted": 1}
+
+
+def test_multi_remote_ai_receives_per_repository_budget_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_clone(remote: str, parent: Path) -> Path:
+        return parent / remote.replace("/", "__")
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        return _budgeted_remote_commits(kwargs["repo_path"])
+
+    def fake_generation(**kwargs: object) -> str:
+        captured.update(kwargs)
+        return "AI standup"
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_clone_remote_repo", fake_clone)
+    monkeypatch.setattr(cli.tempfile, "TemporaryDirectory", lambda: _TempDir(tmp_path))
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+    monkeypatch.setattr(cli, "generate_standup", fake_generation)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-repo",
+            "Tresnanda/web",
+            "--max-commits",
+            "1",
+            "--max-files-per-commit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["budget_metadata"] == {
+        "repositories": {
+            "Tresnanda/api": {
+                "truncated": True,
+                "limits": {"max_commits": 1, "max_files_per_commit": 1},
+                "commits_included": 1,
+                "commits_truncated": True,
+                "more_commits_available": True,
+                "files_truncated": True,
+                "commits_with_files_truncated": 1,
+                "files_omitted": 1,
+            },
+            "Tresnanda/web": {
+                "truncated": True,
+                "limits": {"max_commits": 1, "max_files_per_commit": 1},
+                "commits_included": 1,
+                "commits_truncated": True,
+                "more_commits_available": True,
+                "files_truncated": True,
+                "commits_with_files_truncated": 1,
+                "files_omitted": 1,
+            },
+        }
+    }
+    commit_data = captured["commit_data"]
+    assert isinstance(commit_data, dict)
+    assert set(commit_data["_repositories"]) == {"Tresnanda/api", "Tresnanda/web"}
+
+
 def test_markdown_mode_prints_paste_ready_summary(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
