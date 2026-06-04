@@ -36,10 +36,12 @@ from git_standup.clipboard import clipboard_available, copy_to_clipboard, read_s
 from git_standup.config import AIConfig, config_path, load_config, reset_config, save_config
 from git_standup.env_persist import persist_env_var
 from git_standup.formatter import (
+    TEAM_DIGEST_TEMPLATES,
     build_changelog_output,
     build_json_output,
     build_markdown_output,
     build_stats_output,
+    build_team_digest_output,
     build_text_output,
     print_ai_standup,
     print_text_standup,
@@ -99,7 +101,9 @@ def _build_commit_data(
                     item["truncated"] = c["truncated"]
                 if c.get("pull_request"):
                     item["pull_request"] = c["pull_request"]
-                quality = describe_commit_quality(c)
+                if c.get("issues"):
+                    item["issues"] = c["issues"]
+                quality = c.get("quality") or describe_commit_quality(c)
                 if quality:
                     item["quality"] = quality
                 commit_items.append(item)
@@ -169,6 +173,34 @@ def _with_commit_quality(commits: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if quality:
             item["quality"] = quality
         annotated.append(item)
+    return annotated
+
+
+def _with_commit_quality_in_data(commit_data: dict[str, Any]) -> dict[str, Any]:
+    """Attach low-signal commit metadata inside grouped commit data."""
+    annotated: dict[str, Any] = {}
+    for repo_name, repo_data in commit_data.items():
+        if repo_name == REPOSITORIES_KEY and isinstance(repo_data, dict):
+            annotated[repo_name] = {
+                name: _with_commit_quality_in_data(data)
+                for name, data in repo_data.items()
+                if isinstance(data, dict)
+            }
+            continue
+        if not isinstance(repo_data, dict):
+            annotated[repo_name] = repo_data
+            continue
+        annotated_days: dict[str, Any] = {}
+        for date_key, day_data in repo_data.items():
+            if not isinstance(day_data, dict):
+                annotated_days[date_key] = day_data
+                continue
+            annotated_day = dict(day_data)
+            commits = day_data.get("commits", [])
+            if isinstance(commits, list):
+                annotated_day["commits"] = _with_commit_quality(commits)
+            annotated_days[date_key] = annotated_day
+        annotated[repo_name] = annotated_days
     return annotated
 
 
@@ -1727,6 +1759,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--team-digest",
+        action="store_true",
+        help=(
+            "Output a team workflow digest with owner sections, risk radar, "
+            "and follow-up questions (always no AI)"
+        ),
+    )
+    parser.add_argument(
+        "--template",
+        choices=TEAM_DIGEST_TEMPLATES,
+        default="slack",
+        help="Team digest template style to label the output",
+    )
+    parser.add_argument(
         "--stats-only",
         action="store_true",
         help="Output aggregate commit/file/line stats without per-commit details (always no AI)",
@@ -1824,6 +1870,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--changelog cannot be combined with --json")
     if args.changelog and args.markdown:
         parser.error("--changelog cannot be combined with --markdown; it already emits Markdown")
+    if args.team_digest and args.json:
+        parser.error("--team-digest cannot be combined with --json")
+    if args.team_digest and args.markdown:
+        parser.error("--team-digest cannot be combined with --markdown; it already emits Markdown")
+    if args.team_digest and args.changelog:
+        parser.error("--team-digest cannot be combined with --changelog")
     if args.remote_repos and args.repo is not None:
         parser.error("--remote-repo cannot be combined with --repo or a positional repo path")
     del args.tokens
@@ -1937,6 +1989,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     commit_data = multi_repo_commit_data or _build_commit_data(commits)
+
+    if args.team_digest:
+        if args.ai:
+            print(
+                "Warning: --ai has no effect with --team-digest; team digest is always raw.",
+                file=sys.stderr,
+            )
+        team_digest = build_team_digest_output(
+            _with_commit_quality_in_data(commit_data),
+            template=args.template,
+        )
+        _emit_markdown(team_digest, args.output)
+        return 0
 
     output_format = "markdown" if args.markdown else "text"
 

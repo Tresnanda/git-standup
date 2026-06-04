@@ -13,6 +13,7 @@ Generate standup-ready summaries from Git history.
 - Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
 - Prints aggregate-only stats for dashboards or quick check-ins with `--stats-only`.
 - Builds non-AI changelog Markdown for release notes with `--changelog`.
+- Builds non-AI team workflow digests with owner sections, risk radar, and follow-up questions using `--team-digest`.
 - Can run against another repository path with `--repo`.
 - Can run against one or more GitHub repositories with repeatable `--remote-repo`.
 - Can focus reports on one or more paths with repeatable `--path` filters.
@@ -207,6 +208,18 @@ Generate release-note style changelog Markdown without AI:
 ```bash
 git-standup --since 2026-01-01 --until 2026-01-07 --changelog
 ```
+
+Generate a team workflow digest without AI:
+
+```bash
+git-standup --team-digest --template github --include-prs
+```
+
+`--team-digest` emits Markdown with owner/author sections, PR or issue evidence
+when present, a risk/blocker radar for WIP/revert/fix/low-signal commits, and
+follow-up questions for handoff. Supported templates are `slack`, `github`,
+`jira`, and `linear`; the template labels the target workflow while keeping the
+output secret-safe and local.
 
 Run from anywhere against another repository:
 
