@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -11,6 +12,29 @@ import httpx
 
 # Maximum characters for the prompt — conservative for small models
 _MAX_PROMPT_CHARS = 120_000
+
+_REDACTED = "[REDACTED]"
+_SENSITIVE_KEY_VALUE_RE = re.compile(
+    r"\b(?P<key>api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
+    r"id[_-]?token|token|password|passwd|pwd|secret|client[_-]?secret|"
+    r"private[_-]?key)"
+    r"(?P<sep>\s*[:=]\s*)"
+    r"(?P<quote>['\"]?)"
+    r"(?P<value>[^\s,'\";)}\]]+)"
+    r"(?P=quote)",
+    re.IGNORECASE,
+)
+_BEARER_TOKEN_RE = re.compile(
+    r"\b(?P<prefix>Bearer\s+)(?P<value>[A-Za-z0-9._~+/=-]{8,})",
+    re.IGNORECASE,
+)
+_COMMON_SECRET_TOKEN_RE = re.compile(
+    r"\b(?:sk(?:_live|_test|_proj)?[_-][A-Za-z0-9._-]{6,}|"
+    r"ghp_[A-Za-z0-9._-]{6,}|"
+    r"github_pat_[A-Za-z0-9._-]{10,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AKIA[0-9A-Z]{16})\b"
+)
 
 
 def _is_azure_deployment_url(url_base: str) -> bool:
@@ -56,6 +80,36 @@ def _format_instruction(output_format: str) -> str:
     )
 
 
+def _redact_secret_text(value: str) -> str:
+    """Mask API-key/token/password-looking values while retaining surrounding context."""
+
+    def replace_key_value(match: re.Match[str]) -> str:
+        return (
+            f"{match.group('key')}{match.group('sep')}"
+            f"{match.group('quote')}{_REDACTED}{match.group('quote')}"
+        )
+
+    value = _SENSITIVE_KEY_VALUE_RE.sub(replace_key_value, value)
+    value = _BEARER_TOKEN_RE.sub(lambda match: match.group("prefix") + _REDACTED, value)
+    return _COMMON_SECRET_TOKEN_RE.sub(_REDACTED, value)
+
+
+def _redact_for_ai_prompt(value: Any) -> Any:
+    """Return a copy of prompt data with secret-looking strings redacted."""
+    if isinstance(value, str):
+        return _redact_secret_text(value)
+    if isinstance(value, list):
+        return [_redact_for_ai_prompt(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_for_ai_prompt(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            _redact_for_ai_prompt(key): _redact_for_ai_prompt(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 def _build_prompt(
     commit_data: dict[str, Any],
     style: str = "standup",
@@ -63,6 +117,7 @@ def _build_prompt(
     output_format: str = "text",
 ) -> str:
     """Build a structured prompt from commit data."""
+    redacted_commit_data = _redact_for_ai_prompt(commit_data)
     metadata_section = ""
     if budget_metadata is not None:
         metadata_section = f"""
@@ -98,7 +153,7 @@ Evidence rules:
 {metadata_section}
 
 COMMIT DATA:
-{json.dumps(commit_data, indent=2, default=str)}
+{json.dumps(redacted_commit_data, indent=2, default=str)}
 
 Generate the standup summary now:"""
 

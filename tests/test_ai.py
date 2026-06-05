@@ -5,6 +5,7 @@ from git_standup.ai import (
     _chat_completions_url,
     _harness_command,
     generate_standup,
+    generate_standup_with_harness,
 )
 
 
@@ -85,6 +86,89 @@ def test_build_prompt_warns_not_to_embellish_low_signal_commits() -> None:
     assert "Do not embellish weak git evidence" in prompt
     assert "When a commit has `quality.signal` set to `low`" in prompt
     assert "say the commit message was vague instead of" in prompt
+
+
+def _commit_data_with_secrets() -> dict:
+    return {
+        "Alice": {
+            "2026-03-10": {
+                "commits": [
+                    {
+                        "hash": "abc123",
+                        "subject": "Document payment gateway setup",
+                        "body": (
+                            "Configured Stripe with api_key=sk_test_1234567890abcdef "
+                            "and password: correct-horse-battery-staple."
+                        ),
+                        "files": [
+                            {
+                                "path": "config/sk_test_1234567890abcdef/payment.env",
+                                "insertions": 4,
+                                "deletions": 1,
+                            }
+                        ],
+                        "pull_request": {
+                            "number": 42,
+                            "title": "Add gateway token ghp_1234567890abcdef1234",
+                            "body": "Rollout notes include access_token=prbodySECRET1234567890.",
+                            "url": "https://github.com/example/repo/pull/42",
+                        },
+                    }
+                ]
+            }
+        }
+    }
+
+
+def _assert_prompt_is_redacted(prompt: str) -> None:
+    assert "sk_test_1234567890abcdef" not in prompt
+    assert "correct-horse-battery-staple" not in prompt
+    assert "ghp_1234567890abcdef1234" not in prompt
+    assert "prbodySECRET1234567890" not in prompt
+    assert "api_key=[REDACTED]" in prompt
+    assert "password: [REDACTED]" in prompt
+    assert "config/[REDACTED]/payment.env" in prompt
+    assert "Add gateway token [REDACTED]" in prompt
+    assert "access_token=[REDACTED]" in prompt
+
+
+def test_generate_standup_redacts_secrets_before_api_prompt(monkeypatch) -> None:
+    _RecordingClient.calls = []
+    monkeypatch.setattr("git_standup.ai.httpx.Client", _RecordingClient)
+
+    result = generate_standup(
+        _commit_data_with_secrets(),
+        api_key="test-api-key",
+        base_url="https://openai-compatible.example/v1",
+    )
+
+    assert result == "Standup summary"
+    prompt = _RecordingClient.calls[0]["json"]["messages"][0]["content"]
+    _assert_prompt_is_redacted(prompt)
+
+
+def test_generate_standup_with_harness_redacts_secrets_before_cli_prompt(monkeypatch) -> None:
+    prompts: list[str] = []
+
+    class _FakeResult:
+        returncode = 0
+        stdout = "Harness summary"
+        stderr = ""
+
+    def fake_run(_command, *, input, **_kwargs):
+        prompts.append(input)
+        return _FakeResult()
+
+    monkeypatch.setattr("git_standup.ai.subprocess.run", fake_run)
+
+    result = generate_standup_with_harness(
+        _commit_data_with_secrets(),
+        harness="codex",
+    )
+
+    assert result == "Harness summary"
+    assert len(prompts) == 1
+    _assert_prompt_is_redacted(prompts[0])
 
 
 def test_generate_standup_uses_api_key_header_for_azure_deployments(monkeypatch) -> None:
