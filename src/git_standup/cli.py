@@ -38,6 +38,7 @@ from git_standup.env_persist import persist_env_var
 from git_standup.formatter import (
     TEAM_DIGEST_TEMPLATES,
     build_changelog_output,
+    build_insights_output,
     build_json_output,
     build_markdown_output,
     build_stats_output,
@@ -564,6 +565,8 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
         args.append("--json")
     elif output_format == "changelog":
         args.append("--changelog")
+    elif output_format == "insights":
+        args.append("--insights")
     elif output_format == "stats":
         args.append("--stats-only")
     elif output_format == "markdown":
@@ -588,6 +591,8 @@ def _today_start_string(now: datetime | None = None) -> str:
 def _default_output_path(output_format: str) -> str:
     if output_format == "changelog":
         return "changelog.md"
+    if output_format == "insights":
+        return "standup-insights.md"
     if output_format == "stats":
         return "standup-stats.txt"
     if output_format == "markdown":
@@ -1567,12 +1572,17 @@ def run_wizard() -> int:
                     "Changelog",
                     "Release-note Markdown grouped by conventional commit type.",
                 ),
+                (
+                    "insights",
+                    "Planning insights",
+                    "Themes, product areas, risks, and follow-ups for weekly planning.",
+                ),
             ],
             "markdown",
         )
 
         _wizard_separator()
-        if answers["format"] in {"json", "changelog", "stats"}:
+        if answers["format"] in {"json", "changelog", "insights", "stats"}:
             answers["ai"] = False
         elif _ai_provider_available(ai_report):
             answers["ai"] = _confirm("Polish with AI?", default=True)
@@ -1634,6 +1644,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
         "  git-standup --stats-only       # Aggregate stats without commit details\n"
         "  git-standup --changelog        # Release-note Markdown without AI\n"
+        "  git-standup --insights         # Planning insights without AI\n"
         "  git-standup --json              # Raw JSON output\n"
         "  git-standup --max-commits 20 --max-files-per-commit 10\n"
         "  git-standup --markdown --output standup.md\n"
@@ -1778,6 +1789,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--insights",
+        action="store_true",
+        help=(
+            "Output concise planning insights with themes, likely product areas, "
+            "review/rollout risks, and follow-ups (always no AI)"
+        ),
+    )
+    parser.add_argument(
         "--template",
         choices=TEAM_DIGEST_TEMPLATES,
         default="slack",
@@ -1887,6 +1906,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--team-digest cannot be combined with --markdown; it already emits Markdown")
     if args.team_digest and args.changelog:
         parser.error("--team-digest cannot be combined with --changelog")
+    if args.insights and args.json:
+        parser.error("--insights cannot be combined with --json")
+    if args.insights and args.markdown:
+        parser.error("--insights cannot be combined with --markdown; it already emits Markdown")
+    if args.insights and args.changelog:
+        parser.error("--insights cannot be combined with --changelog")
+    if args.insights and args.team_digest:
+        parser.error("--insights cannot be combined with --team-digest")
     if args.remote_repos and args.repo is not None:
         parser.error("--remote-repo cannot be combined with --repo or a positional repo path")
     del args.tokens
@@ -2046,6 +2073,16 @@ def main(argv: list[str] | None = None) -> int:
             template=args.template,
         )
         _emit_markdown(team_digest, args.output)
+        return 0
+
+    if args.insights:
+        if args.ai:
+            print(
+                "Warning: --ai has no effect with --insights; insights are always raw.",
+                file=sys.stderr,
+            )
+        insights = build_insights_output(_with_commit_quality_in_data(commit_data))
+        _emit_markdown(insights, args.output)
         return 0
 
     output_format = "markdown" if args.markdown else "text"

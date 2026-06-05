@@ -867,6 +867,9 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
     changelog = cli.parse_args(["--changelog"])
     assert changelog.changelog is True
 
+    insights = cli.parse_args(["--insights"])
+    assert insights.insights is True
+
     stats = cli.parse_args(["--stats-only"])
     assert stats.stats_only is True
 
@@ -1479,6 +1482,14 @@ def test_build_wizard_args_changelog_is_raw_markdown_release_notes() -> None:
     assert args == ["--days", "14", "--changelog", "--output", "changelog.md"]
 
 
+def test_build_wizard_args_insights_is_raw_planning_report() -> None:
+    args = cli.build_wizard_args(
+        {"repo": ".", "preset": "week", "format": "insights", "ai": True}
+    )
+
+    assert args == ["--days", "7", "--insights"]
+
+
 def test_build_wizard_args_for_multiple_selected_authors() -> None:
     args = cli.build_wizard_args(
         {
@@ -1498,6 +1509,7 @@ def test_default_output_path_matches_output_style() -> None:
     assert cli._default_output_path("markdown") == "standup.md"
     assert cli._default_output_path("json") == "standup.json"
     assert cli._default_output_path("changelog") == "changelog.md"
+    assert cli._default_output_path("insights") == "standup-insights.md"
     assert cli._default_output_path("stats") == "standup-stats.txt"
 
 
@@ -1622,7 +1634,7 @@ def test_run_wizard_asks_timeframe_then_author_then_format(
     assert prompts[2] == ("By who choice", {"choices": ["1", "2", "3"], "default": "1"})
     assert prompts[3] == (
         "Output format choice",
-        {"choices": ["1", "2", "3", "4", "5"], "default": "1"},
+        {"choices": ["1", "2", "3", "4", "5", "6"], "default": "1"},
     )
     out = capsys.readouterr().out
     assert "Review changes from:" in out

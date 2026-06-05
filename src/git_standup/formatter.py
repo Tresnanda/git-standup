@@ -401,6 +401,274 @@ def build_team_digest_output(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def build_insights_output(commit_data: dict[str, Any]) -> str:
+    """Build a concise, non-AI planning-insights report from commit data."""
+    items = _insights_items(commit_data)
+    authors = {item["author"] for item in items}
+    repos = {item["repo"] for item in items if item.get("repo")}
+    all_files: set[str] = set()
+    total_insertions = 0
+    total_deletions = 0
+    themes: dict[str, dict[str, Any]] = {}
+    areas: dict[str, dict[str, Any]] = {}
+    risks: list[dict[str, Any]] = []
+    follow_ups: list[str] = []
+
+    for item in items:
+        commit = item["commit"]
+        files = _sorted_commit_files(commit)
+        insertions = sum(int(file_stat.get("insertions", 0) or 0) for file_stat in files)
+        deletions = sum(int(file_stat.get("deletions", 0) or 0) for file_stat in files)
+        file_paths = {str(file_stat.get("path") or "unknown") for file_stat in files}
+        all_files.update(file_paths)
+        total_insertions += insertions
+        total_deletions += deletions
+
+        theme = _insights_theme(commit)
+        theme_data = themes.setdefault(
+            theme,
+            {"commits": [], "files": set(), "insertions": 0, "deletions": 0, "repos": set()},
+        )
+        _insights_add_bucket_item(theme_data, item, file_paths, insertions, deletions)
+
+        area = _insights_area(commit)
+        area_data = areas.setdefault(
+            area,
+            {"commits": [], "files": set(), "insertions": 0, "deletions": 0, "repos": set()},
+        )
+        _insights_add_bucket_item(area_data, item, file_paths, insertions, deletions)
+
+        risk_reasons = _insights_risk_reasons(commit, files, insertions + deletions)
+        if risk_reasons:
+            risks.append({"item": item, "reasons": risk_reasons})
+            follow_ups.extend(_insights_risk_follow_ups(str(item["author"]), commit, risk_reasons))
+
+        pr_follow_up = _insights_pr_follow_up(commit)
+        if pr_follow_up:
+            follow_ups.append(pr_follow_up)
+        for issue_note in _format_issue_notes(commit):
+            issue_follow_up = _team_digest_issue_question(str(item["author"]), issue_note)
+            if issue_follow_up:
+                follow_ups.append(issue_follow_up)
+
+    lines = ["# Planning Insights", ""]
+    repo_count = len(repos) if repos else 1
+    lines.extend(
+        [
+            (
+                f"_Scope: {len(items)} commit(s) · {len(authors)} author(s) · "
+                f"{repo_count} repo(s) · {len(all_files)} file(s) · "
+                f"+{total_insertions}/-{total_deletions} lines_"
+            ),
+            "",
+        ]
+    )
+
+    lines.extend(["## Themes", ""])
+    if themes:
+        for label, data in _insights_sorted_buckets(themes):
+            lines.append(_format_insights_bucket(label, data))
+    else:
+        lines.append("- No commit themes found in the selected range.")
+    lines.append("")
+
+    lines.extend(["## Likely Product Areas", ""])
+    if areas:
+        for label, data in _insights_sorted_buckets(areas):
+            lines.append(_format_insights_bucket(label, data, include_files=True))
+    else:
+        lines.append("- No likely product areas found in the selected range.")
+    lines.append("")
+
+    lines.extend(["## Review / Rollout Risks", ""])
+    if risks:
+        for risk in risks[:8]:
+            item = risk["item"]
+            commit = item["commit"]
+            repo_note = f" · {item['repo']}" if item.get("repo") else ""
+            lines.append(
+                f"- {item['author']}: `{_commit_hash_short(commit)}` "
+                f"{commit.get('subject', 'Untitled commit')}{repo_note} — "
+                f"{_risk_reason_text(risk['reasons'])}"
+            )
+    else:
+        lines.append("- No obvious WIP/revert/fix/low-signal or large-surface risks found.")
+    lines.append("")
+
+    lines.extend(["## Suggested Follow-ups", ""])
+    deduped_follow_ups = _dedupe_preserving_order(follow_ups)
+    if deduped_follow_ups:
+        for question in deduped_follow_ups[:8]:
+            lines.append(f"- {question}")
+    else:
+        lines.append(
+            "- Confirm whether any theme needs review owners, rollout notes, "
+            "or validation plans."
+        )
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _insights_items(commit_data: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for repo_name, repo_data in _repository_sections(commit_data):
+        for author, days in repo_data.items():
+            for date_key, day_data in days.items():
+                for commit in day_data.get("commits", []):
+                    items.append(
+                        {
+                            "repo": repo_name,
+                            "author": str(author),
+                            "date": str(date_key),
+                            "commit": commit,
+                        }
+                    )
+    return items
+
+
+def _insights_add_bucket_item(
+    bucket: dict[str, Any],
+    item: dict[str, Any],
+    file_paths: set[str],
+    insertions: int,
+    deletions: int,
+) -> None:
+    bucket["commits"].append(item)
+    bucket["files"].update(file_paths)
+    bucket["insertions"] += insertions
+    bucket["deletions"] += deletions
+    if item.get("repo"):
+        bucket["repos"].add(item["repo"])
+
+
+def _insights_sorted_buckets(
+    buckets: dict[str, dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    return sorted(
+        buckets.items(),
+        key=lambda pair: (-len(pair[1]["commits"]), pair[0]),
+    )
+
+
+def _format_insights_bucket(
+    label: str,
+    data: dict[str, Any],
+    *,
+    include_files: bool = False,
+) -> str:
+    commits = data["commits"]
+    summary = (
+        f"- {label}: {len(commits)} commit(s), {len(data['files'])} file(s), "
+        f"+{data['insertions']}/-{data['deletions']} lines"
+    )
+    repos = sorted(str(repo) for repo in data["repos"])
+    if repos:
+        summary += f" · repos: {', '.join(repos[:3])}"
+    if include_files and data["files"]:
+        summary += f" · files: {_format_inline_paths(sorted(data['files'])[:3])}"
+    evidence = _insights_evidence(commits)
+    if evidence:
+        summary += f" — {evidence}"
+    return summary
+
+
+def _insights_evidence(items: list[dict[str, Any]], limit: int = 2) -> str:
+    evidence: list[str] = []
+    for item in items[:limit]:
+        commit = item["commit"]
+        subject = str(commit.get("subject") or "Untitled commit")
+        repo_note = f" ({item['repo']})" if item.get("repo") else ""
+        evidence.append(f"`{_commit_hash_short(commit)}` {subject}{repo_note}")
+    return "; ".join(evidence)
+
+
+def _format_inline_paths(paths: list[str]) -> str:
+    return ", ".join(f"`{path}`" for path in paths)
+
+
+def _insights_theme(commit: dict[str, Any]) -> str:
+    subject = str(commit.get("subject") or "").strip()
+    lower_text = f"{subject}\n{commit.get('body', '')}".lower()
+    match = _CONVENTIONAL_SUBJECT_RE.match(subject)
+    commit_type = match.group("type").lower() if match else subject.partition(":")[0].lower()
+    if commit_type in {"feat", "feature"}:
+        return "Feature work"
+    if commit_type in {"fix", "bugfix", "hotfix"} or re.match(
+        r"^(?:fix|fixes|fixed|hotfix)\b", lower_text
+    ):
+        return "Fixes and stabilization"
+    if commit_type in {"docs", "doc"}:
+        return "Documentation"
+    if commit_type in {"test", "tests", "qa"}:
+        return "Tests and quality"
+    if commit_type == "refactor":
+        return "Refactors"
+    if commit_type in {"chore", "ci", "build", "deps", "dependency", "dependencies"}:
+        return "Maintenance"
+    if re.search(r"\b(?:wip|work in progress|blocked?|blocker)\b", lower_text):
+        return "WIP and handoff"
+    if re.search(r"\b(?:revert|reverted|reverting|rollback)\b", lower_text):
+        return "Rollbacks and reversions"
+    return "Other planning signal"
+
+
+def _insights_area(commit: dict[str, Any]) -> str:
+    paths = "\n".join(str(file_stat.get("path") or "") for file_stat in commit.get("files", []))
+    text = f"{commit.get('subject', '')}\n{commit.get('body', '')}\n{paths}".lower()
+    area_patterns = (
+        ("Auth/Security", r"\b(?:auth|login|oauth|passkey|password|permission|security|token)\b"),
+        ("Docs/Enablement", r"\b(?:docs?|readme|guide|onboarding|runbook)\b"),
+        ("Frontend/UI", r"\b(?:frontend|web|ui|component|page|react|vue|tsx|css|dashboard)\b"),
+        ("API/Backend", r"\b(?:api|backend|server|controller|route|endpoint|service)\b"),
+        ("Data/Storage", r"\b(?:db|database|migration|sql|model|schema|storage)\b"),
+        ("Infrastructure/CI", r"\b(?:infra|deploy|docker|k8s|ci|workflow|terraform)\b"),
+        ("Tests/Quality", r"\b(?:test|tests|spec|pytest|qa|flaky)\b"),
+        ("Build/Dependencies", r"\b(?:package|requirements|pyproject|build|deps?|dependency)\b"),
+    )
+    for label, pattern in area_patterns:
+        if re.search(pattern, text):
+            return label
+    return "General product surface"
+
+
+def _insights_risk_reasons(
+    commit: dict[str, Any],
+    files: list[dict[str, Any]],
+    line_delta: int,
+) -> list[str]:
+    reasons = _team_digest_risk_reasons(commit)
+    if len(files) >= 5:
+        reasons.append(f"large file surface: {len(files)} files")
+    if line_delta >= 250:
+        reasons.append(f"large line delta: {line_delta} lines")
+    return reasons
+
+
+def _insights_pr_follow_up(commit: dict[str, Any]) -> str:
+    pull_request = commit.get("pull_request")
+    if not isinstance(pull_request, dict) or pull_request.get("number") is None:
+        return ""
+    title = str(pull_request.get("title") or "").strip()
+    title_text = f" ({title})" if title else ""
+    return f"Confirm reviewer/merge plan for PR #{pull_request['number']}{title_text}."
+
+
+def _insights_risk_follow_ups(
+    owner: str,
+    commit: dict[str, Any],
+    reasons: list[str],
+) -> list[str]:
+    questions = [_team_digest_risk_question(owner, commit, reasons)]
+    hash_short = _commit_hash_short(commit)
+    if any(reason == "keyword: fix" for reason in reasons):
+        questions.append(f"{owner}: What validation confirms `{hash_short}` fixed the issue?")
+    if any(reason.startswith("large ") for reason in reasons):
+        questions.append(
+            f"{owner}: Does `{hash_short}` need staged rollout or extra review coverage?"
+        )
+    return questions
+
+
 def _team_digest_owners(commit_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     owners: dict[str, dict[str, Any]] = {}
     for repo_name, repo_data in _repository_sections(commit_data):
