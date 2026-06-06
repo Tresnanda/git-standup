@@ -3,7 +3,7 @@
 import json
 import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from rich.console import Console
@@ -314,6 +314,8 @@ def build_team_digest_output(
     commit_data: dict[str, Any],
     *,
     template: str = "slack",
+    include_workflow_board: bool = False,
+    stale_days: int = 7,
 ) -> str:
     """Build a non-AI team workflow digest grouped by owner/author."""
     if template not in TEAM_DIGEST_TEMPLATES:
@@ -398,7 +400,262 @@ def build_team_digest_output(
     else:
         lines.append("- Any commits that need review, rollout notes, or owner confirmation?")
 
+    if include_workflow_board:
+        lines.extend(
+            [
+                "",
+                *_workflow_board_lines(
+                    commit_data,
+                    stale_days=stale_days,
+                    heading_level=2,
+                ),
+            ]
+        )
+
     return "\n".join(lines).rstrip() + "\n"
+
+
+def build_workflow_board_output(commit_data: dict[str, Any], *, stale_days: int = 7) -> str:
+    """Build a standup-ready PR workflow board from enriched PR metadata."""
+    lines = _workflow_board_lines(commit_data, stale_days=stale_days, heading_level=1)
+    return "\n".join(lines) + "\n"
+
+
+def _workflow_board_lines(
+    commit_data: dict[str, Any],
+    *,
+    stale_days: int,
+    heading_level: int,
+) -> list[str]:
+    heading = "#" * heading_level
+    section_heading = "#" * (heading_level + 1)
+    board = _workflow_board_items(commit_data, stale_days=stale_days)
+    total_prs = sum(len(items) for items in board.values())
+    lines = [
+        f"{heading} Workflow Status Board",
+        "",
+        (
+            "_PR handoff board using GitHub status metadata when available: draft state, "
+            "checks, reviews, mergeability, labels, linked issues, and stale follow-ups._"
+        ),
+        "",
+        f"- Pull requests: {total_prs}",
+        f"- Stale threshold: {stale_days} day(s) since last PR update",
+        "",
+    ]
+    sections = [
+        ("needs_review", "Needs Review"),
+        ("ready_to_merge", "Ready to Merge"),
+        ("rollout", "Rollout"),
+        ("owner_action", "Owner Action"),
+    ]
+    for key, title in sections:
+        lines.extend([f"{section_heading} {title}", ""])
+        items = board[key]
+        if not items:
+            lines.append("- None")
+        else:
+            for item in items:
+                lines.extend(_format_workflow_board_item(item))
+        lines.append("")
+    return lines[:-1]
+
+
+def _workflow_board_items(
+    commit_data: dict[str, Any],
+    *,
+    stale_days: int,
+) -> dict[str, list[dict[str, Any]]]:
+    board: dict[str, list[dict[str, Any]]] = {
+        "needs_review": [],
+        "ready_to_merge": [],
+        "rollout": [],
+        "owner_action": [],
+    }
+    for item in _collect_pull_request_items(commit_data, stale_days=stale_days):
+        board[_workflow_board_bucket(item)].append(item)
+    return board
+
+
+def _collect_pull_request_items(
+    commit_data: dict[str, Any],
+    *,
+    stale_days: int,
+) -> list[dict[str, Any]]:
+    items_by_key: dict[str, dict[str, Any]] = {}
+    for repo_name, repo_data in _repository_sections(commit_data):
+        for owner, days in repo_data.items():
+            for date_key, day_data in days.items():
+                for commit in day_data.get("commits", []):
+                    pull_request = commit.get("pull_request")
+                    if not isinstance(pull_request, dict) or pull_request.get("number") is None:
+                        continue
+                    key = _workflow_pr_key(repo_name, pull_request)
+                    item = items_by_key.setdefault(
+                        key,
+                        {
+                            "repo": repo_name,
+                            "owner": str(owner),
+                            "pull_request": pull_request,
+                            "commits": [],
+                            "stale_days": stale_days,
+                            "stale": _is_stale_pr(pull_request, stale_days=stale_days),
+                        },
+                    )
+                    item["commits"].append({"date": str(date_key), "commit": commit})
+                    if str(owner) not in str(item["owner"]).split(", "):
+                        item["owner"] = f"{item['owner']}, {owner}"
+    return list(items_by_key.values())
+
+
+def _workflow_pr_key(repo_name: str | None, pull_request: dict[str, Any]) -> str:
+    url = str(pull_request.get("url") or "").strip()
+    if url:
+        return url
+    return f"{repo_name or ''}#{pull_request.get('number')}"
+
+
+def _workflow_board_bucket(item: dict[str, Any]) -> str:
+    pull_request = item["pull_request"]
+    state = str(pull_request.get("state") or "").lower()
+    draft = bool(pull_request.get("draft"))
+    review = str(pull_request.get("review_decision") or "").lower()
+    merge_state = str(pull_request.get("merge_state_status") or "").lower()
+    checks = pull_request.get("checks") if isinstance(pull_request.get("checks"), dict) else {}
+    check_state = str(checks.get("state") or "").lower()
+
+    if state in {"merged"} or pull_request.get("merged_at"):
+        return "rollout"
+    if state == "closed":
+        return "rollout"
+    if (
+        draft
+        or review == "changes_requested"
+        or check_state in {"failed", "pending"}
+        or merge_state in {"dirty", "blocked", "behind", "has_hooks", "unknown"}
+        or item.get("stale")
+    ):
+        return "owner_action"
+    if review == "approved" and check_state in {"passed", "none", ""} and merge_state in {
+        "",
+        "clean",
+        "unstable",
+    }:
+        return "ready_to_merge"
+    return "needs_review"
+
+
+def _format_workflow_board_item(item: dict[str, Any]) -> list[str]:
+    pull_request = item["pull_request"]
+    owner = item["owner"]
+    repo_note = f" · {item['repo']}" if item.get("repo") else ""
+    title = str(pull_request.get("title") or "Untitled PR")
+    number = pull_request.get("number")
+    url = str(pull_request.get("url") or "").strip()
+    label = f"#{number} {title}"
+    linked = f"[{label}]({url})" if url else label
+    status_bits = _workflow_status_bits(item)
+    lines = [f"- {owner}: {linked}{repo_note} · {' · '.join(status_bits)}"]
+    labels = pull_request.get("labels")
+    if isinstance(labels, list) and labels:
+        lines.append(f"  - Labels: {', '.join(str(label) for label in labels)}")
+    issues = pull_request.get("linked_issues")
+    if isinstance(issues, list) and issues:
+        lines.append(f"  - Linked issues: {_format_linked_issues(issues)}")
+    commits = item.get("commits") if isinstance(item.get("commits"), list) else []
+    if commits:
+        first = commits[0]
+        commit = first["commit"]
+        lines.append(
+            "  - Evidence: "
+            f"`{_commit_hash_short(commit)}` {commit.get('subject', 'Untitled commit')} "
+            f"({first['date']})"
+        )
+    action = _workflow_action_text(item)
+    if action:
+        lines.append(f"  - Follow-up: {action}")
+    return lines
+
+
+def _workflow_status_bits(item: dict[str, Any]) -> list[str]:
+    pull_request = item["pull_request"]
+    bits = [f"state: {str(pull_request.get('state') or 'unknown').lower()}"]
+    bits.append("draft" if pull_request.get("draft") else "not draft")
+    bits.append(f"checks: {_checks_summary(pull_request.get('checks'))}")
+    bits.append(f"review: {str(pull_request.get('review_decision') or 'unknown').lower()}")
+    bits.append(f"merge: {str(pull_request.get('merge_state_status') or 'unknown').lower()}")
+    if pull_request.get("updated_at"):
+        bits.append(f"updated: {str(pull_request['updated_at'])[:10]}")
+    if item.get("stale"):
+        bits.append(f"stale >{item['stale_days']}d")
+    return bits
+
+
+def _checks_summary(checks: object) -> str:
+    if not isinstance(checks, dict):
+        return "unknown"
+    state = str(checks.get("state") or "unknown")
+    total = checks.get("total")
+    if total is None:
+        return state
+    return (
+        f"{state} ({checks.get('passed', 0)} passed, {checks.get('failed', 0)} failed, "
+        f"{checks.get('pending', 0)} pending)"
+    )
+
+
+def _format_linked_issues(issues: list[object]) -> str:
+    parts: list[str] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        number = issue.get("number")
+        title = str(issue.get("title") or "").strip()
+        url = str(issue.get("url") or "").strip()
+        label = f"#{number}" if number is not None else title or url
+        if title and number is not None:
+            label = f"{label} {title}"
+        parts.append(f"[{label}]({url})" if url else label)
+    return ", ".join(parts)
+
+
+def _workflow_action_text(item: dict[str, Any]) -> str:
+    pull_request = item["pull_request"]
+    checks = pull_request.get("checks") if isinstance(pull_request.get("checks"), dict) else {}
+    check_state = str(checks.get("state") or "").lower()
+    review = str(pull_request.get("review_decision") or "").lower()
+    merge_state = str(pull_request.get("merge_state_status") or "").lower()
+    if pull_request.get("draft"):
+        return "Owner to confirm whether the draft is ready for review."
+    if review == "changes_requested":
+        return "Owner to address requested review changes."
+    if check_state == "failed":
+        return "Owner to fix failing checks before handoff."
+    if check_state == "pending":
+        return "Owner to wait on or unblock pending checks."
+    if merge_state in {"dirty", "blocked", "behind", "has_hooks", "unknown"}:
+        return "Owner to resolve mergeability or branch protection blockers."
+    if item.get("stale"):
+        return "Stale follow-up: confirm current owner, review status, or rollout plan."
+    if _workflow_board_bucket(item) == "ready_to_merge":
+        return "Merge owner to merge and communicate rollout notes."
+    if _workflow_board_bucket(item) == "rollout":
+        return "Confirm deployment, release notes, and linked issue closure."
+    return "Reviewer to review or assign next action."
+
+
+def _is_stale_pr(pull_request: dict[str, Any], *, stale_days: int) -> bool:
+    updated_at = str(pull_request.get("updated_at") or "").strip()
+    if not updated_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)
+    return age.days >= stale_days
 
 
 def _team_digest_owners(commit_data: dict[str, Any]) -> dict[str, dict[str, Any]]:

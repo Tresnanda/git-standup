@@ -43,6 +43,7 @@ from git_standup.formatter import (
     build_stats_output,
     build_team_digest_output,
     build_text_output,
+    build_workflow_board_output,
     print_ai_standup,
     print_text_standup,
 )
@@ -1629,6 +1630,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --author me         # My commits only\n"
         "  git-standup --exclude-merges   # Hide merge commits\n"
         "  git-standup --include-prs      # Include PR numbers/titles/URLs\n"
+        "  git-standup --include-prs --pr-status  # Include GitHub PR checks/reviews\n"
+        "  git-standup --workflow-board   # PR handoff board by workflow status\n"
         "  git-standup --no-ai             # Text summary without AI\n"
         "  git-standup --markdown          # AI-polished Markdown summary\n"
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
@@ -1742,6 +1745,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--pr-status",
+        action="store_true",
+        help=(
+            "When PR enrichment is enabled, also query GitHub for draft state, checks, "
+            "reviews, mergeability, labels, linked issues, and ownership metadata"
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output raw JSON (no AI processing)",
@@ -1776,6 +1787,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Output a team workflow digest with owner sections, risk radar, "
             "and follow-up questions (always no AI)"
         ),
+    )
+    parser.add_argument(
+        "--workflow-board",
+        action="store_true",
+        help=(
+            "Output a GitHub PR workflow status board grouped by needs review, "
+            "ready to merge, rollout, and owner action (always no AI)"
+        ),
+    )
+    parser.add_argument(
+        "--stale-days",
+        type=_positive_int,
+        default=7,
+        help="PR age in days since last update before the workflow board flags stale follow-up",
     )
     parser.add_argument(
         "--template",
@@ -1887,6 +1912,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--team-digest cannot be combined with --markdown; it already emits Markdown")
     if args.team_digest and args.changelog:
         parser.error("--team-digest cannot be combined with --changelog")
+    if args.workflow_board:
+        if args.json:
+            parser.error("--workflow-board cannot be combined with --json")
+        if args.markdown:
+            parser.error(
+                "--workflow-board cannot be combined with --markdown; "
+                "it already emits Markdown"
+            )
+        if args.changelog:
+            parser.error("--workflow-board cannot be combined with --changelog")
+        if args.stats_only:
+            parser.error("--workflow-board cannot be combined with --stats-only")
+        args.include_prs = True
+        args.pr_status = True
+    if args.pr_status:
+        args.include_prs = True
     if args.remote_repos and args.repo is not None:
         parser.error("--remote-repo cannot be combined with --repo or a positional repo path")
     del args.tokens
@@ -1948,6 +1989,13 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if metadata is not None:
                         repo_budget_metadata[repo_name] = metadata
+                    if args.pr_status:
+                        fetched = enrich_commits_with_prs(
+                            fetched,
+                            repo_slug=repo_name,
+                            query_github=True,
+                            include_status=True,
+                        )
                     for commit in fetched:
                         commit["repository"] = repo_name
                     repo_commits.append((repo_name, fetched))
@@ -1977,11 +2025,13 @@ def main(argv: list[str] | None = None) -> int:
                         if metadata is not None:
                             repo_budget_metadata[repo_name] = metadata
                         if args.include_prs:
-                            fetched = enrich_commits_with_prs(
-                                fetched,
-                                repo_path=str(repo_path),
-                                query_github=True,
-                            )
+                            enrich_kwargs: dict[str, Any] = {
+                                "repo_path": str(repo_path),
+                                "query_github": True,
+                            }
+                            if args.pr_status:
+                                enrich_kwargs["include_status"] = True
+                            fetched = enrich_commits_with_prs(fetched, **enrich_kwargs)
                         for commit in fetched:
                             commit["repository"] = repo_name
                         repo_commits.append((repo_name, fetched))
@@ -2017,11 +2067,10 @@ def main(argv: list[str] | None = None) -> int:
             max_files_per_commit=args.max_files_per_commit,
         )
         if args.include_prs:
-            commits = enrich_commits_with_prs(
-                commits,
-                repo_path=args.repo,
-                query_github=True,
-            )
+            enrich_kwargs = {"repo_path": args.repo, "query_github": True}
+            if args.pr_status:
+                enrich_kwargs["include_status"] = True
+            commits = enrich_commits_with_prs(commits, **enrich_kwargs)
 
     if args.changelog:
         if args.ai:
@@ -2035,6 +2084,19 @@ def main(argv: list[str] | None = None) -> int:
 
     commit_data = multi_repo_commit_data or _build_commit_data(commits)
 
+    if args.workflow_board:
+        if args.ai:
+            print(
+                "Warning: --ai has no effect with --workflow-board; workflow board is always raw.",
+                file=sys.stderr,
+            )
+        workflow_board = build_workflow_board_output(
+            _with_commit_quality_in_data(commit_data),
+            stale_days=args.stale_days,
+        )
+        _emit_markdown(workflow_board, args.output)
+        return 0
+
     if args.team_digest:
         if args.ai:
             print(
@@ -2044,6 +2106,8 @@ def main(argv: list[str] | None = None) -> int:
         team_digest = build_team_digest_output(
             _with_commit_quality_in_data(commit_data),
             template=args.template,
+            include_workflow_board=args.pr_status,
+            stale_days=args.stale_days,
         )
         _emit_markdown(team_digest, args.output)
         return 0

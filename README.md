@@ -20,6 +20,8 @@ Generate standup-ready summaries from Git history.
 - Supports exact report windows with `--since` and `--until`.
 - Can hide merge commits with `--exclude-merges` for less noisy standups.
 - Can opt into PR-aware digests with `--include-prs` / `--pr-digest`.
+- Can enrich PR digests with GitHub workflow status using `--pr-status`.
+- Builds a standup-ready PR workflow board with `--workflow-board`.
 - Writes summaries directly to files with `--output`.
 - Supports AI summaries through OpenAI-compatible chat-completion APIs.
 - Flags low-signal commit messages so vague history is not over-polished.

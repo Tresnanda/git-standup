@@ -1,7 +1,7 @@
 import pytest
 
 from git_standup import cli
-from git_standup.formatter import build_team_digest_output
+from git_standup.formatter import build_team_digest_output, build_workflow_board_output
 
 
 def _commit(
@@ -73,11 +73,151 @@ def test_team_digest_formatter_groups_by_owner_and_surfaces_workflow_signals() -
     assert "Bob: Is `wip22222` still in progress or blocking handoff?" in output
 
 
+def test_workflow_board_groups_prs_by_handoff_status() -> None:
+    commit_data = cli._build_commit_data(
+        [
+            _commit(
+                "feat: needs review",
+                hash_="rev111111",
+                pull_request={
+                    "number": 10,
+                    "title": "Needs review",
+                    "url": "https://github.com/Tresnanda/git-standup/pull/10",
+                    "state": "open",
+                    "draft": False,
+                    "checks": {
+                        "state": "passed",
+                        "total": 2,
+                        "passed": 2,
+                        "failed": 0,
+                        "pending": 0,
+                    },
+                    "review_decision": "review_required",
+                    "merge_state_status": "clean",
+                    "updated_at": "2999-01-01T00:00:00Z",
+                },
+            ),
+            _commit(
+                "feat: ready to merge",
+                hash_="mrg222222",
+                pull_request={
+                    "number": 11,
+                    "title": "Ready to merge",
+                    "url": "https://github.com/Tresnanda/git-standup/pull/11",
+                    "state": "open",
+                    "draft": False,
+                    "checks": {
+                        "state": "passed",
+                        "total": 3,
+                        "passed": 3,
+                        "failed": 0,
+                        "pending": 0,
+                    },
+                    "review_decision": "approved",
+                    "merge_state_status": "clean",
+                    "labels": ["release"],
+                    "linked_issues": [
+                        {
+                            "number": 7,
+                            "title": "Ship board",
+                            "url": "https://github.com/Tresnanda/git-standup/issues/7",
+                        }
+                    ],
+                    "updated_at": "2999-01-01T00:00:00Z",
+                },
+            ),
+            _commit(
+                "fix: owner action",
+                hash_="act333333",
+                author="Bob",
+                pull_request={
+                    "number": 12,
+                    "title": "Fix owner action",
+                    "state": "open",
+                    "draft": True,
+                    "checks": {
+                        "state": "failed",
+                        "total": 1,
+                        "passed": 0,
+                        "failed": 1,
+                        "pending": 0,
+                    },
+                    "review_decision": "changes_requested",
+                    "merge_state_status": "dirty",
+                    "updated_at": "2020-01-01T00:00:00Z",
+                },
+            ),
+        ]
+    )
+
+    output = build_workflow_board_output(commit_data, stale_days=7)
+
+    assert output.startswith("# Workflow Status Board\n")
+    assert "## Needs Review" in output
+    assert "Alice: [#10 Needs review]" in output
+    assert "review: review_required" in output
+    assert "## Ready to Merge" in output
+    assert "Alice: [#11 Ready to merge]" in output
+    assert "Labels: release" in output
+    assert (
+        "Linked issues: [#7 Ship board](https://github.com/Tresnanda/git-standup/issues/7)"
+        in output
+    )
+    assert "Merge owner to merge and communicate rollout notes." in output
+    assert "## Owner Action" in output
+    assert "Bob: #12 Fix owner action" in output
+    assert "draft" in output
+    assert "checks: failed (0 passed, 1 failed, 0 pending)" in output
+    assert "Owner to confirm whether the draft is ready for review." in output
+
+
+def test_team_digest_can_append_workflow_board() -> None:
+    commit_data = cli._build_commit_data(
+        [
+            _commit(
+                "feat: append board",
+                hash_="brd444444",
+                pull_request={
+                    "number": 44,
+                    "title": "Append board",
+                    "state": "open",
+                    "draft": False,
+                    "review_decision": "approved",
+                    "checks": {
+                        "state": "passed",
+                        "total": 1,
+                        "passed": 1,
+                        "failed": 0,
+                        "pending": 0,
+                    },
+                    "merge_state_status": "clean",
+                    "updated_at": "2999-01-01T00:00:00Z",
+                },
+            )
+        ]
+    )
+
+    output = build_team_digest_output(commit_data, include_workflow_board=True)
+
+    assert "# Team Workflow Digest" in output
+    assert "## Workflow Status Board" in output
+    assert "### Ready to Merge" in output
+
+
 def test_cli_accepts_team_digest_template_contract() -> None:
     args = cli.parse_args(["--team-digest", "--template", "jira"])
 
     assert args.team_digest is True
     assert args.template == "jira"
+
+
+def test_cli_workflow_board_implies_pr_status() -> None:
+    args = cli.parse_args(["--workflow-board", "--stale-days", "3"])
+
+    assert args.workflow_board is True
+    assert args.include_prs is True
+    assert args.pr_status is True
+    assert args.stale_days == 3
 
 
 def test_cli_rejects_unknown_team_digest_template() -> None:
