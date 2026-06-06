@@ -652,7 +652,7 @@ def test_markdown_output_notes_low_signal_commit_messages() -> None:
 
     assert "- `abc123` wip" in output
     assert "Low-signal commit message" in output
-    assert "generic subject `wip`" in output
+    assert "generic subject \\`wip\\`" in output
 
 
 def test_markdown_output_includes_pull_request_metadata() -> None:
@@ -805,7 +805,7 @@ def test_changelog_mode_notes_low_signal_commit_messages(
     assert exit_code == 0
     output = capsys.readouterr().out
     assert "Low-signal commit message" in output
-    assert "generic subject `fix`" in output
+    assert "generic subject \\`fix\\`" in output
 
 
 def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPatch) -> None:
