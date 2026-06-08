@@ -163,7 +163,7 @@ def _matches_author(item: dict[str, Any], author: str) -> bool:
         )
         if value
     )
-    return any(re.search(pattern, haystack, re.IGNORECASE) for pattern in patterns)
+    return any(re.search(re.escape(pattern), haystack, re.IGNORECASE) for pattern in patterns)
 
 
 def _commit_from_api_item(

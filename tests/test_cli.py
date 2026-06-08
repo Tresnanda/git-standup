@@ -551,6 +551,21 @@ def test_multi_remote_api_json_includes_per_repository_budget_metadata(
     assert [commit["hash"] for commit in commits] == ["Tresnanda/api-1"]
 
 
+def test_github_api_author_filter_treats_alias_email_literals() -> None:
+    item = {
+        "commit": {
+            "author": {
+                "name": "Alice",
+                "email": "123+alice@users.noreply.github.com",
+            }
+        },
+        "author": {"login": "alice-gh"},
+    }
+
+    assert github_api._matches_author(item, "123+alice@users.noreply.github.com")
+    assert not github_api._matches_author(item, "1234alice@usersxnoreplyxgithubxcom")
+
+
 def test_remote_api_backend_uses_github_api_without_cloning(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
