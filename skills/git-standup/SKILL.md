@@ -59,6 +59,17 @@ Today only:
 git-standup --no-wizard --since YYYY-MM-DD --markdown
 ```
 
+Since the last checkpointed report:
+
+```bash
+git-standup --no-wizard --since-last --write-checkpoint --markdown --no-ai
+```
+
+Use `--write-checkpoint` only when the user wants git-standup to update its
+non-secret local checkpoint file after a successful report. If `--since-last`
+has no saved checkpoint yet, run an initial explicit date/window report with
+`--write-checkpoint` or ask for the desired starting date.
+
 Only the current user's commits:
 
 ```bash
@@ -115,6 +126,8 @@ git-standup --no-wizard --remote-repo owner/api --remote-repo owner/web --markdo
   commit type.
 - `--include-prs` / `--pr-digest`: opt into PR numbers, titles, and URLs when
   local merge/squash metadata or GitHub CLI lookup can resolve them.
+- `--since-last`: opt into the last saved report checkpoint instead of typing a
+  `--since` date; combine with `--write-checkpoint` for recurring standups.
 - `--output <file>`: use when the user wants the report saved.
 
 If the user asks for terminal output that is easy to read, prefer Markdown and
