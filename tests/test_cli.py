@@ -972,6 +972,35 @@ def test_write_checkpoint_updates_after_success_with_no_commits(
     assert data["repositories"][repo_id]["since"] == "2026-06-08 18:00:00 +0000"
 
 
+def test_remote_checkpoint_labels_strip_credentials_and_normalize_urls() -> None:
+    assert cli._remote_repo_label("https://github.com/owner/api.git") == "owner/api"
+    assert cli._remote_repo_label("http://github.com/owner/api.git") == "owner/api"
+    assert cli._remote_repo_label("ssh://git@github.com/owner/api.git") == "owner/api"
+    assert cli._remote_repo_label("git@github.com:owner/api.git") == "owner/api"
+
+    target = cli._remote_checkpoint_target("ssh://git@github.com/owner/api.git")
+    assert target.repository_id == cli.remote_repository_id("owner/api")
+    assert target.label == "owner/api"
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "https://x-access-token:SECRET@github.com/owner/api.git",
+        "https://SECRET@github.com/owner/api.git",
+        "token@github.com:owner/api.git",
+        "x-access-token:SECRET@github.com:owner/api.git",
+        "git+ssh://git:SECRET@github.com/owner/api.git",
+        "git@github.com:owner/api.git?token=SECRET",
+        "git@github.com:owner/api.git#SECRET",
+        "https://github.com/owner/api.git?token=SECRET",
+    ],
+)
+def test_remote_checkpoint_labels_reject_credential_bearing_urls(remote_url: str) -> None:
+    with pytest.raises(RuntimeError, match="credential-bearing|owner/repo"):
+        cli._remote_checkpoint_target(remote_url)
+
+
 def test_remote_since_last_uses_per_repository_checkpoints(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -1239,14 +1240,31 @@ def _choose_remote_repositories() -> list[str]:
 
 
 def _remote_repo_label(repo: str) -> str:
-    cleaned = repo.rstrip("/")
+    """Return a credential-free owner/repo label for remote display/checkpoints."""
+    cleaned = repo.strip().rstrip("/")
     if cleaned.endswith(".git"):
         cleaned = cleaned[:-4]
-    if cleaned.startswith("https://github.com/"):
-        cleaned = cleaned.removeprefix("https://github.com/")
-    elif cleaned.startswith("git@github.com:"):
+
+    if cleaned.startswith("git@github.com:"):
         cleaned = cleaned.removeprefix("git@github.com:")
-    return cleaned
+    elif "://" in cleaned:
+        parsed = urlsplit(cleaned)
+        if parsed.hostname != "github.com":
+            raise RuntimeError(f"GitHub remote repositories must use github.com, got {repo!r}")
+        if parsed.password is not None or (parsed.username not in (None, "git")):
+            raise RuntimeError("Refusing credential-bearing GitHub remote URL")
+        if parsed.query or parsed.fragment:
+            raise RuntimeError("Refusing credential-bearing GitHub remote URL")
+        cleaned = parsed.path.lstrip("/")
+    elif "@" in cleaned or ":" in cleaned:
+        raise RuntimeError("Refusing credential-bearing GitHub remote URL")
+
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    parts = [part for part in cleaned.split("/") if part]
+    if len(parts) != 2 or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+        raise RuntimeError(f"GitHub remote repositories must be owner/repo, got {repo!r}")
+    return f"{parts[0]}/{parts[1]}"
 
 
 def _remote_repo_url(repo: str) -> str:
