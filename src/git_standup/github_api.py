@@ -4,12 +4,102 @@ import json
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 _GITHUB_DATETIME_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?)?$"
 )
+
+
+class GitHubRateLimitError(RuntimeError):
+    """Raised when GitHub reports primary or secondary API rate limiting."""
+
+
+@dataclass
+class GitHubApiRunCache:
+    """Per-run GitHub API response cache and rate-limit skip accounting."""
+
+    responses: dict[tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]], object] = field(
+        default_factory=dict
+    )
+    hits: int = 0
+    misses: int = 0
+    rate_limited: bool = False
+    commit_details_skipped: int = 0
+    pull_request_enrichments_skipped: int = 0
+    repositories: dict[str, dict[str, int | bool]] = field(default_factory=dict)
+
+    def key(
+        self,
+        endpoint: str,
+        params: dict[str, str | int] | None,
+        headers: list[str] | None,
+    ) -> tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]]:
+        return (
+            endpoint,
+            tuple(sorted((str(key), str(value)) for key, value in (params or {}).items())),
+            tuple(headers or ()),
+        )
+
+    def repo_stats(self, repo_slug: str) -> dict[str, int | bool]:
+        return self.repositories.setdefault(
+            repo_slug,
+            {
+                "commit_details_skipped": 0,
+                "pull_request_enrichments_skipped": 0,
+                "rate_limited": False,
+            },
+        )
+
+    def mark_rate_limited(self, repo_slug: str | None = None) -> None:
+        self.rate_limited = True
+        if repo_slug:
+            self.repo_stats(repo_slug)["rate_limited"] = True
+
+    def record_commit_detail_skip(self, repo_slug: str) -> None:
+        self.commit_details_skipped += 1
+        stats = self.repo_stats(repo_slug)
+        stats["commit_details_skipped"] = int(stats["commit_details_skipped"]) + 1
+
+    def record_pull_request_skip(self, repo_slug: str) -> None:
+        self.pull_request_enrichments_skipped += 1
+        stats = self.repo_stats(repo_slug)
+        stats["pull_request_enrichments_skipped"] = (
+            int(stats["pull_request_enrichments_skipped"]) + 1
+        )
+
+    def metadata(self) -> dict[str, Any] | None:
+        """Return optional metadata for JSON/AI when caching or rate-limit skips matter."""
+        if not (
+            self.hits
+            or self.rate_limited
+            or self.commit_details_skipped
+            or self.pull_request_enrichments_skipped
+        ):
+            return None
+
+        metadata: dict[str, Any] = {
+            "cache": {
+                "hits": self.hits,
+                "misses": self.misses,
+            },
+            "rate_limit": {
+                "limited": self.rate_limited,
+                "commit_detail_requests_skipped": self.commit_details_skipped,
+                "pull_request_enrichments_skipped": self.pull_request_enrichments_skipped,
+            },
+        }
+        if self.repositories:
+            metadata["repositories"] = {
+                repo: stats
+                for repo, stats in self.repositories.items()
+                if stats.get("rate_limited")
+                or stats.get("commit_details_skipped")
+                or stats.get("pull_request_enrichments_skipped")
+            }
+        return metadata
 
 
 def get_remote_commits(
@@ -22,16 +112,19 @@ def get_remote_commits(
     max_commits: int | None = None,
     exclude_merges: bool = False,
     include_prs: bool = False,
+    cache: GitHubApiRunCache | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for a GitHub repository without cloning it locally.
 
-    The implementation uses ``gh api`` so authentication, enterprise host config,
-    and rate-limit handling are delegated to the GitHub CLI. Commit details are
-    fetched for matching commits so output can include changed-file stats.
+    The implementation uses ``gh api`` so authentication and enterprise host
+    config are delegated to the GitHub CLI. A per-run cache may be supplied by
+    callers that fetch multiple repositories. Commits are collected from list
+    pages first, then details/PRs are enriched progressively so optional detail
+    calls can be skipped cleanly if GitHub starts rate-limiting the run.
     """
+    run_cache = cache or GitHubApiRunCache()
     repo_slug = _normalize_repo_slug(repo)
-    author_filter = _resolve_author_filter(author)
-    commits: list[dict[str, Any]] = []
+    author_filter = _resolve_author_filter(author, cache=run_cache)
     page = 1
     per_page = 100
     params: dict[str, str | int] = {
@@ -45,10 +138,13 @@ def get_remote_commits(
     if until:
         params["until"] = _to_github_datetime(until, end_of_day=True)
 
+    matching_items: list[dict[str, Any]] = []
     while True:
-        page_items = _gh_api_json(
+        page_items = _cached_gh_api_json(
+            run_cache,
             f"/repos/{repo_slug}/commits",
             params={**params, "page": page},
+            repo_slug=repo_slug,
         )
         if not isinstance(page_items, list):
             raise RuntimeError(f"GitHub API returned unexpected commit data for {repo_slug}")
@@ -62,15 +158,20 @@ def get_remote_commits(
                 continue
             if author_filter and not _matches_author(item, author_filter):
                 continue
-            commits.append(_commit_from_api_item(repo_slug, item, include_prs=include_prs))
-            if max_commits is not None and len(commits) >= max_commits:
-                return commits
+            matching_items.append(item)
+            if max_commits is not None and len(matching_items) >= max_commits:
+                break
 
+        if max_commits is not None and len(matching_items) >= max_commits:
+            break
         if len(page_items) < per_page:
             break
         page += 1
 
-    return commits
+    return [
+        _commit_from_api_item(repo_slug, item, include_prs=include_prs, cache=run_cache)
+        for item in matching_items
+    ]
 
 
 def validate_remote_api_options(*, base_branch: str | None, pathspecs: list[str] | None) -> None:
@@ -127,12 +228,12 @@ def _to_github_datetime(value: str, *, end_of_day: bool) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _resolve_author_filter(author: str | None) -> str | None:
+def _resolve_author_filter(author: str | None, *, cache: GitHubApiRunCache) -> str | None:
     if not author:
         return None
     if author != "me":
         return author
-    user = _gh_api_json("/user")
+    user = _cached_gh_api_json(cache, "/user")
     if not isinstance(user, dict) or not user.get("login"):
         raise RuntimeError("Could not resolve --author me from GitHub API")
     return str(user["login"])
@@ -166,11 +267,30 @@ def _commit_from_api_item(
     item: dict[str, Any],
     *,
     include_prs: bool,
+    cache: GitHubApiRunCache,
 ) -> dict[str, Any]:
     sha = str(item.get("sha") or "")
-    detail = _gh_api_json(f"/repos/{repo_slug}/commits/{sha}") if sha else item
-    if not isinstance(detail, dict):
-        raise RuntimeError(f"GitHub API returned unexpected commit detail for {sha}")
+    api_metadata: dict[str, Any] = {}
+    detail = item
+
+    if sha:
+        if cache.rate_limited:
+            cache.record_commit_detail_skip(repo_slug)
+            api_metadata["commit_detail"] = _skipped_metadata("rate_limit")
+        else:
+            try:
+                fetched_detail = _cached_gh_api_json(
+                    cache,
+                    f"/repos/{repo_slug}/commits/{sha}",
+                    repo_slug=repo_slug,
+                )
+            except GitHubRateLimitError:
+                cache.record_commit_detail_skip(repo_slug)
+                api_metadata["commit_detail"] = _skipped_metadata("rate_limit")
+            else:
+                if not isinstance(fetched_detail, dict):
+                    raise RuntimeError(f"GitHub API returned unexpected commit detail for {sha}")
+                detail = fetched_detail
 
     commit = _as_dict(detail.get("commit"))
     commit_author = _as_dict(commit.get("author"))
@@ -186,10 +306,22 @@ def _commit_from_api_item(
         "files": _files_from_detail(detail),
     }
     if include_prs and sha:
-        pr_info = _pull_request_for_commit(repo_slug, sha)
-        if pr_info:
-            parsed["pull_request"] = pr_info
+        if cache.rate_limited:
+            cache.record_pull_request_skip(repo_slug)
+            api_metadata["pull_request_enrichment"] = _skipped_metadata("rate_limit")
+        else:
+            pr_info, skipped_reason = _pull_request_for_commit(repo_slug, sha, cache=cache)
+            if skipped_reason:
+                api_metadata["pull_request_enrichment"] = _skipped_metadata(skipped_reason)
+            elif pr_info:
+                parsed["pull_request"] = pr_info
+    if api_metadata:
+        parsed["github_api"] = api_metadata
     return parsed
+
+
+def _skipped_metadata(reason: str) -> dict[str, Any]:
+    return {"skipped": True, "reason": reason}
 
 
 def _split_commit_message(message: str) -> tuple[str, str]:
@@ -227,29 +359,72 @@ def _int_or_zero(value: object) -> int:
         return 0
 
 
-def _pull_request_for_commit(repo_slug: str, sha: str) -> dict[str, Any] | None:
+def _pull_request_for_commit(
+    repo_slug: str,
+    sha: str,
+    *,
+    cache: GitHubApiRunCache,
+) -> tuple[dict[str, Any] | None, str | None]:
     try:
-        prs = _gh_api_json(
+        prs = _cached_gh_api_json(
+            cache,
             f"/repos/{repo_slug}/commits/{sha}/pulls",
             headers=["Accept: application/vnd.github.groot-preview+json"],
+            repo_slug=repo_slug,
         )
+    except GitHubRateLimitError:
+        cache.record_pull_request_skip(repo_slug)
+        return None, "rate_limit"
     except RuntimeError:
-        return None
+        return None, None
     if not isinstance(prs, list) or not prs:
-        return None
+        return None, None
     first = prs[0]
     if not isinstance(first, dict):
-        return None
+        return None, None
     try:
         number = int(first["number"])
     except (KeyError, TypeError, ValueError):
-        return None
+        return None, None
     info: dict[str, Any] = {"number": number, "source": "github-api"}
     if first.get("title"):
         info["title"] = str(first["title"])
     if first.get("html_url") or first.get("url"):
         info["url"] = str(first.get("html_url") or first.get("url"))
-    return info
+    return info, None
+
+
+def _cached_gh_api_json(
+    cache: GitHubApiRunCache,
+    endpoint: str,
+    *,
+    params: dict[str, str | int] | None = None,
+    headers: list[str] | None = None,
+    repo_slug: str | None = None,
+) -> object:
+    key = cache.key(endpoint, params, headers)
+    if key in cache.responses:
+        cache.hits += 1
+        return cache.responses[key]
+
+    cache.misses += 1
+    try:
+        value = _gh_api_json(endpoint, params=params, headers=headers)
+    except GitHubRateLimitError:
+        cache.mark_rate_limited(repo_slug)
+        raise
+    except RuntimeError as exc:
+        if _is_rate_limit_error(str(exc)):
+            cache.mark_rate_limited(repo_slug)
+            raise GitHubRateLimitError(str(exc)) from exc
+        raise
+    cache.responses[key] = value
+    return value
+
+
+def _is_rate_limit_error(message: str) -> bool:
+    lowered = message.lower()
+    return "rate limit" in lowered or "secondary rate" in lowered or "too many requests" in lowered
 
 
 def _gh_api_json(
@@ -287,7 +462,10 @@ def _gh_api_json(
     if result.returncode != 0:
         stderr = result.stderr.strip()
         detail = f": {stderr}" if stderr else ""
-        raise RuntimeError(f"GitHub API request failed for {endpoint}{detail}")
+        message = f"GitHub API request failed for {endpoint}{detail}"
+        if _is_rate_limit_error(message):
+            raise GitHubRateLimitError(message)
+        raise RuntimeError(message)
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
