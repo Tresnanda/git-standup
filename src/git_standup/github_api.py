@@ -30,6 +30,7 @@ class GitHubApiRunCache:
     commit_details_skipped: int = 0
     pull_request_enrichments_skipped: int = 0
     repositories: dict[str, dict[str, int | bool]] = field(default_factory=dict)
+    default_since: str | None = None
 
     def key(
         self,
@@ -124,26 +125,40 @@ def get_remote_commits(
     """
     run_cache = cache or GitHubApiRunCache()
     repo_slug = _normalize_repo_slug(repo)
-    author_filter = _resolve_author_filter(author, cache=run_cache)
+    try:
+        author_filter = _resolve_author_filter(author, cache=run_cache)
+    except GitHubRateLimitError:
+        run_cache.mark_rate_limited(repo_slug)
+        return []
     page = 1
     per_page = 100
+    if since:
+        since_datetime = _to_github_datetime(since, end_of_day=False)
+    else:
+        if run_cache.default_since is None:
+            run_cache.default_since = (
+                datetime.now(timezone.utc) - timedelta(days=days)
+            ).isoformat().replace("+00:00", "Z")
+        since_datetime = run_cache.default_since
     params: dict[str, str | int] = {
         "per_page": per_page,
-        "since": _to_github_datetime(since, end_of_day=False)
-        if since
-        else (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace(
-            "+00:00", "Z"
-        ),
+        "since": since_datetime,
     }
     if until:
         params["until"] = _to_github_datetime(until, end_of_day=True)
 
     matching_items: list[dict[str, Any]] = []
     while True:
+        page_params = {**params, "page": page}
+        page_endpoint = f"/repos/{repo_slug}/commits"
+        page_cache_key = run_cache.key(page_endpoint, page_params, None)
+        if run_cache.rate_limited and page_cache_key not in run_cache.responses:
+            run_cache.mark_rate_limited(repo_slug)
+            break
         page_items = _cached_gh_api_json(
             run_cache,
-            f"/repos/{repo_slug}/commits",
-            params={**params, "page": page},
+            page_endpoint,
+            params=page_params,
             repo_slug=repo_slug,
         )
         if not isinstance(page_items, list):
@@ -274,14 +289,16 @@ def _commit_from_api_item(
     detail = item
 
     if sha:
-        if cache.rate_limited:
+        detail_endpoint = f"/repos/{repo_slug}/commits/{sha}"
+        detail_cached = cache.key(detail_endpoint, None, None) in cache.responses
+        if cache.rate_limited and not detail_cached:
             cache.record_commit_detail_skip(repo_slug)
             api_metadata["commit_detail"] = _skipped_metadata("rate_limit")
         else:
             try:
                 fetched_detail = _cached_gh_api_json(
                     cache,
-                    f"/repos/{repo_slug}/commits/{sha}",
+                    detail_endpoint,
                     repo_slug=repo_slug,
                 )
             except GitHubRateLimitError:
@@ -306,7 +323,10 @@ def _commit_from_api_item(
         "files": _files_from_detail(detail),
     }
     if include_prs and sha:
-        if cache.rate_limited:
+        pr_endpoint = f"/repos/{repo_slug}/commits/{sha}/pulls"
+        pr_headers = ["Accept: application/vnd.github.groot-preview+json"]
+        pr_cached = cache.key(pr_endpoint, None, pr_headers) in cache.responses
+        if cache.rate_limited and not pr_cached:
             cache.record_pull_request_skip(repo_slug)
             api_metadata["pull_request_enrichment"] = _skipped_metadata("rate_limit")
         else:
@@ -406,6 +426,10 @@ def _cached_gh_api_json(
     if key in cache.responses:
         cache.hits += 1
         return cache.responses[key]
+
+    if cache.rate_limited:
+        cache.mark_rate_limited(repo_slug)
+        raise GitHubRateLimitError("GitHub API rate limit active; skipping uncached request")
 
     cache.misses += 1
     try:

@@ -118,6 +118,138 @@ def test_get_remote_commits_skips_progressive_enrichment_after_rate_limit(
     }
 
 
+def test_get_remote_commits_uses_cached_detail_after_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        del params, headers
+        calls.append(endpoint)
+        if endpoint == "/repos/Tresnanda/api/commits":
+            return [_api_commit("abc123")]
+        if endpoint == "/repos/Tresnanda/api/commits/abc123":
+            return {
+                **_api_commit("abc123", message="Cached details"),
+                "files": [{"filename": "src/app.py", "additions": 3, "deletions": 1}],
+            }
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+    cache = GitHubApiRunCache()
+
+    first = get_remote_commits("Tresnanda/api", since="2026-03-01", cache=cache)
+    cache.mark_rate_limited("Tresnanda/api")
+    second = get_remote_commits("Tresnanda/api", since="2026-03-01", cache=cache)
+
+    assert calls == ["/repos/Tresnanda/api/commits", "/repos/Tresnanda/api/commits/abc123"]
+    assert first == second
+    assert second[0]["files"] == [{"path": "src/app.py", "insertions": 3, "deletions": 1}]
+    assert "github_api" not in second[0]
+
+
+def test_get_remote_commits_reuses_cached_default_window_after_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, str | int] | None]] = []
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        del headers
+        calls.append((endpoint, params))
+        if endpoint == "/repos/Tresnanda/api/commits":
+            return [_api_commit("abc123")]
+        if endpoint == "/repos/Tresnanda/api/commits/abc123":
+            return _api_commit("abc123")
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+    cache = GitHubApiRunCache()
+
+    first = get_remote_commits("Tresnanda/api", days=7, cache=cache)
+    cache.mark_rate_limited("Tresnanda/api")
+    second = get_remote_commits("Tresnanda/api", days=7, cache=cache)
+
+    assert first == second
+    assert len(calls) == 2
+
+
+def test_get_remote_commits_skips_uncached_author_lookup_after_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        del params, headers
+        raise AssertionError(f"unexpected uncached API call after rate limit: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+    cache = GitHubApiRunCache(rate_limited=True)
+
+    commits = get_remote_commits("Tresnanda/api", author="me", since="2026-03-01", cache=cache)
+
+    assert commits == []
+    assert cache.repositories["Tresnanda/api"]["rate_limited"] is True
+
+
+def test_cli_api_mode_skips_uncached_repo_listing_after_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    from git_standup import cli
+
+    calls: list[str] = []
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        del params, headers
+        calls.append(endpoint)
+        if endpoint == "/repos/Tresnanda/api/commits":
+            return [_api_commit("abc123", message="Fallback summary")]
+        if endpoint == "/repos/Tresnanda/api/commits/abc123":
+            raise GitHubRateLimitError("secondary rate limit")
+        raise AssertionError(f"unexpected endpoint after rate limit: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-repo",
+            "http://github.com/Tresnanda/web.git",
+            "--remote-backend",
+            "api",
+            "--json",
+            "--since",
+            "2026-03-01",
+        ]
+    )
+
+    assert exit_code == 0
+    output = json.loads(capsys.readouterr().out)
+    assert set(output["_repositories"]) == {"Tresnanda/api"}
+    repositories = output["_metadata"]["github_api"]["repositories"]
+    assert repositories["Tresnanda/web"]["rate_limited"] is True
+    assert calls == ["/repos/Tresnanda/api/commits", "/repos/Tresnanda/api/commits/abc123"]
+
+
 def test_cli_json_includes_rate_limit_skip_metadata(
     monkeypatch: pytest.MonkeyPatch,
     capsys: Any,

@@ -48,6 +48,7 @@ from git_standup.formatter import (
 )
 from git_standup.github_api import (
     GitHubApiRunCache,
+    _normalize_repo_slug,
     get_remote_commits,
     validate_remote_api_options,
 )
@@ -1950,6 +1951,9 @@ def main(argv: list[str] | None = None) -> int:
                         include_prs=args.include_prs,
                         cache=api_cache,
                     )
+                    repo_stats = api_cache.repositories.get(_normalize_repo_slug(remote_repo))
+                    if not fetched and repo_stats and repo_stats.get("rate_limited"):
+                        continue
                     fetched, metadata = _apply_output_budget(
                         fetched,
                         max_commits=args.max_commits,
