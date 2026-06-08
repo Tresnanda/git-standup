@@ -7,6 +7,8 @@ import subprocess
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
+from git_standup.author_aliases import AuthorAliases
+
 _GITHUB_DATETIME_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?)?$"
 )
@@ -22,6 +24,7 @@ def get_remote_commits(
     max_commits: int | None = None,
     exclude_merges: bool = False,
     include_prs: bool = False,
+    author_aliases: AuthorAliases | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for a GitHub repository without cloning it locally.
 
@@ -31,6 +34,8 @@ def get_remote_commits(
     """
     repo_slug = _normalize_repo_slug(repo)
     author_filter = _resolve_author_filter(author)
+    if author_aliases is not None:
+        author_filter = author_aliases.expand_filter(author_filter)
     commits: list[dict[str, Any]] = []
     page = 1
     per_page = 100
@@ -185,6 +190,8 @@ def _commit_from_api_item(
         "body": body,
         "files": _files_from_detail(detail),
     }
+    if github_author.get("login"):
+        parsed["author_login"] = str(github_author["login"])
     if include_prs and sha:
         pr_info = _pull_request_for_commit(repo_slug, sha)
         if pr_info:

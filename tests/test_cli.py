@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from git_standup import cli, github_api
+from git_standup.author_aliases import AuthorAliases
 from git_standup.formatter import build_markdown_output, build_stats_output
 
 
@@ -76,6 +77,84 @@ def test_json_mode_prints_structured_commit_data(monkeypatch: pytest.MonkeyPatch
     assert output["Alice"]["2026-03-10"]["stats"]["total_commits"] == 1
     assert output["Alice"]["2026-03-10"]["commits"][0]["subject"] == "Add authentication"
     assert "_metadata" not in output
+
+
+def test_author_alias_cli_merges_json_author_groups(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    commits = _sample_commits() + [
+        {
+            "hash": "def456",
+            "author_name": "Alice E.",
+            "author_email": "alice@users.noreply.github.com",
+            "date": "2026-03-10T10:15:00+00:00",
+            "subject": "Fix alias report",
+            "body": "",
+            "files": [{"path": "src/report.py", "insertions": 3, "deletions": 1}],
+        }
+    ]
+    captured: dict[str, object] = {}
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return commits
+
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(
+        [
+            "--json",
+            "--author-alias",
+            "Alice=alice@example.com,Alice E.,alice@users.noreply.github.com",
+        ]
+    )
+
+    assert exit_code == 0
+    aliases = captured["author_aliases"]
+    assert isinstance(aliases, AuthorAliases)
+    assert aliases.expand_filter("Alice") == (
+        "Alice|alice@example.com|Alice E.|alice@users.noreply.github.com"
+    )
+    output = json.loads(capsys.readouterr().out)
+    assert list(output) == ["Alice"]
+    assert output["Alice"]["2026-03-10"]["stats"]["total_commits"] == 2
+    assert [
+        commit["subject"] for commit in output["Alice"]["2026-03-10"]["commits"]
+    ] == ["Add authentication", "Fix alias report"]
+
+
+def test_author_alias_config_merges_team_digest_owner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        '[author_aliases]\n"Alice" = ["Alice E.", "alice@users.noreply.github.com"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "config_path", lambda: config_path)
+    commits = _sample_commits() + [
+        {
+            "hash": "def456",
+            "author_name": "Alice E.",
+            "author_email": "alice@users.noreply.github.com",
+            "date": "2026-03-10T10:15:00+00:00",
+            "subject": "Fix alias digest",
+            "body": "",
+            "files": [{"path": "src/report.py", "insertions": 3, "deletions": 1}],
+        }
+    ]
+    monkeypatch.setattr(cli, "get_commits", lambda **_: commits)
+
+    exit_code = cli.main(["--team-digest"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert output.count("## Owner: Alice") == 1
+    assert "## Owner: Alice E." not in output
+    assert "- Commits: 2 · Files: 2 · Lines: +15/-3" in output
 
 
 def test_include_prs_enriches_json_output_when_requested(
@@ -872,6 +951,9 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
 
     paths = cli.parse_args(["--path", "src", "--pathspec", "README.md"])
     assert paths.pathspecs == ["src", "README.md"]
+
+    aliases = cli.parse_args(["--author-alias", "Alice=alice@example.com,Alice E."])
+    assert aliases.author_alias == ["Alice=alice@example.com,Alice E."]
 
 
 def test_markdown_mode_writes_to_output_file(
