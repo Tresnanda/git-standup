@@ -900,6 +900,8 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
     default = cli.parse_args([])
     assert default.exclude_merges is False
     assert default.remote_backend == "clone"
+    assert default.since_last is False
+    assert default.write_checkpoint is False
 
     me = cli.parse_args(["me"])
     assert me.author == "me"
@@ -931,6 +933,183 @@ def test_parse_args_supports_easy_presets_and_positional_repo() -> None:
 
     paths = cli.parse_args(["--path", "src", "--pathspec", "README.md"])
     assert paths.pathspecs == ["src", "README.md"]
+
+    checkpoint = cli.parse_args(["--since-last", "--write-checkpoint"])
+    assert checkpoint.since_last is True
+    assert checkpoint.write_checkpoint is True
+
+
+def test_since_last_cannot_be_combined_with_since() -> None:
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--since-last", "--since", "2026-06-01"])
+
+
+def test_since_last_uses_checkpoint_and_can_write_next_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    checkpoint_file = tmp_path / "checkpoints.json"
+    repo_root = str(tmp_path / "repo")
+    repo_id = cli.local_repository_id(repo_root)
+    checkpoint_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repositories": {
+                    repo_id: {
+                        "since": "2026-06-08 09:00:00 +0000",
+                        "label": repo_root,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "checkpoint_path", lambda: checkpoint_file)
+    monkeypatch.setattr(cli, "get_repo_root", lambda repo_path=None: repo_root)
+    monkeypatch.setattr(
+        cli,
+        "_checkpoint_timestamp",
+        lambda now=None: "2026-06-08 17:30:00 +0000",
+    )
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return _sample_commits()
+
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(["--since-last", "--write-checkpoint", "--no-ai"])
+
+    assert exit_code == 0
+    assert captured["since"] == "2026-06-08 09:00:00 +0000"
+    data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+    assert data["repositories"][repo_id]["since"] == "2026-06-08 17:30:00 +0000"
+    assert data["repositories"][repo_id]["label"] == repo_root
+
+
+def test_since_last_without_checkpoint_fails_before_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    monkeypatch.setattr(cli, "checkpoint_path", lambda: tmp_path / "checkpoints.json")
+    monkeypatch.setattr(cli, "get_repo_root", lambda repo_path=None: str(tmp_path / "repo"))
+    monkeypatch.setattr(
+        cli,
+        "get_commits",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected fetch")),
+    )
+
+    exit_code = cli.main(["--since-last", "--no-ai"])
+
+    assert exit_code == 1
+    assert "No since-last checkpoint found" in capsys.readouterr().err
+
+
+def test_write_checkpoint_updates_after_success_with_no_commits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    checkpoint_file = tmp_path / "checkpoints.json"
+    repo_root = str(tmp_path / "repo")
+    repo_id = cli.local_repository_id(repo_root)
+    monkeypatch.setattr(cli, "checkpoint_path", lambda: checkpoint_file)
+    monkeypatch.setattr(cli, "get_repo_root", lambda repo_path=None: repo_root)
+    monkeypatch.setattr(
+        cli,
+        "_checkpoint_timestamp",
+        lambda now=None: "2026-06-08 18:00:00 +0000",
+    )
+    monkeypatch.setattr(cli, "get_commits", lambda **_kwargs: [])
+
+    exit_code = cli.main(["--write-checkpoint", "--no-ai"])
+
+    assert exit_code == 0
+    data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+    assert data["repositories"][repo_id]["since"] == "2026-06-08 18:00:00 +0000"
+
+
+def test_remote_checkpoint_labels_strip_credentials_and_normalize_urls() -> None:
+    assert cli._remote_repo_label("https://github.com/owner/api.git") == "owner/api"
+    assert cli._remote_repo_label("http://github.com/owner/api.git") == "owner/api"
+    assert cli._remote_repo_label("ssh://git@github.com/owner/api.git") == "owner/api"
+    assert cli._remote_repo_label("git@github.com:owner/api.git") == "owner/api"
+
+    target = cli._remote_checkpoint_target("ssh://git@github.com/owner/api.git")
+    assert target.repository_id == cli.remote_repository_id("owner/api")
+    assert target.label == "owner/api"
+
+
+@pytest.mark.parametrize(
+    "remote_url",
+    [
+        "https://x-access-token:SECRET@github.com/owner/api.git",
+        "https://SECRET@github.com/owner/api.git",
+        "token@github.com:owner/api.git",
+        "x-access-token:SECRET@github.com:owner/api.git",
+        "git+ssh://git:SECRET@github.com/owner/api.git",
+        "git@github.com:owner/api.git?token=SECRET",
+        "git@github.com:owner/api.git#SECRET",
+        "https://github.com/owner/api.git?token=SECRET",
+    ],
+)
+def test_remote_checkpoint_labels_reject_credential_bearing_urls(remote_url: str) -> None:
+    with pytest.raises(RuntimeError, match="credential-bearing|owner/repo"):
+        cli._remote_checkpoint_target(remote_url)
+
+
+def test_remote_since_last_uses_per_repository_checkpoints(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    checkpoint_file = tmp_path / "checkpoints.json"
+    checkpoint_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "repositories": {
+                    cli.remote_repository_id("owner/api"): {"since": "2026-06-08 09:00:00 +0000"},
+                    cli.remote_repository_id("owner/web"): {"since": "2026-06-08 10:00:00 +0000"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: list[tuple[str, object]] = []
+
+    def fake_get_remote_commits(repo: str, **kwargs: object) -> list[dict[str, object]]:
+        captured.append((repo, kwargs.get("since")))
+        commits = _sample_commits()
+        commits[0]["hash"] = repo.split("/")[-1]
+        commits[0]["subject"] = f"Report {repo}"
+        return commits
+
+    monkeypatch.setattr(cli, "checkpoint_path", lambda: checkpoint_file)
+    monkeypatch.setattr(cli, "get_remote_commits", fake_get_remote_commits)
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "owner/api",
+            "--remote-repo",
+            "owner/web",
+            "--remote-backend",
+            "api",
+            "--since-last",
+            "--json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == [
+        ("owner/api", "2026-06-08 09:00:00 +0000"),
+        ("owner/web", "2026-06-08 10:00:00 +0000"),
+    ]
+    output = json.loads(capsys.readouterr().out)
+    assert set(output["_repositories"]) == {"owner/api", "owner/web"}
 
 
 def test_markdown_mode_writes_to_output_file(
