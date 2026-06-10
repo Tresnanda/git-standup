@@ -6,6 +6,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from git_standup.author_aliases import AuthorAliases
+
 _LOW_SIGNAL_SUBJECTS = {
     "change",
     "changes",
@@ -135,6 +137,7 @@ def get_commits(
     max_commits: int | None = None,
     exclude_merges: bool = False,
     pathspecs: list[str] | None = None,
+    author_aliases: AuthorAliases | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for the last N days.
 
@@ -142,6 +145,13 @@ def get_commits(
         hash, author_name, author_email, date, message, files, insertions, deletions.
     """
     repo_root = get_repo_root(repo_path)
+    if author:
+        if author == "me":
+            # Get current user's name and email
+            author = _get_current_user(repo_root)
+        if author_aliases is not None:
+            author = author_aliases.expand_filter(author)
+
     if author and "|" in author:
         commits_by_hash: dict[str, dict[str, Any]] = {}
         for author_part in (part.strip() for part in author.split("|")):
@@ -157,6 +167,7 @@ def get_commits(
                 max_commits=max_commits,
                 exclude_merges=exclude_merges,
                 pathspecs=pathspecs,
+                author_aliases=None,
             ):
                 commit_hash = str(commit.get("hash", ""))
                 if commit_hash:
@@ -207,9 +218,6 @@ def get_commits(
         cmd.extend([f"{base_branch}..HEAD"])
 
     if author:
-        if author == "me":
-            # Get current user's name and email
-            author = _get_current_user(repo_root)
         cmd.extend([f"--author={author}"])
 
     if pathspecs:

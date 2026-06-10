@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 
+from git_standup.author_aliases import AuthorAliases, canonicalize_commit_authors
 from git_standup.gitlog import (
     _parse_log_output,
     compute_stats,
@@ -266,6 +267,94 @@ def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
     assert "--no-merges" in log_cmd
     separator_index = log_cmd.index("--")
     assert log_cmd[separator_index + 1 :] == ["src", "tests/test_cli.py"]
+
+
+def test_get_commits_expands_me_with_author_aliases(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
+        if cmd[-2:] == ["config", "user.name"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="Alice\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    commits = get_commits(
+        repo_path="/workspace/app",
+        author="me",
+        since="2026-01-01",
+        author_aliases=AuthorAliases.from_mapping(
+            {"Alice": ("alice@example.com", "Alice E.")}
+        ),
+    )
+
+    assert commits == []
+    log_calls = [cmd for cmd in calls if "log" in cmd]
+    author_args = [
+        next(part for part in cmd if part.startswith("--author=")) for cmd in log_calls
+    ]
+    assert author_args == [
+        "--author=Alice",
+        "--author=alice@example.com",
+        "--author=Alice E.",
+    ]
+
+
+def test_get_commits_alias_filter_matches_real_git_commits(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Committer"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "committer@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    first = tmp_path / "first.txt"
+    first.write_text("one\n")
+    subprocess.run(["git", "add", "first.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--author", "Alice <alice@example.com>", "-m", "Alice work"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    second = tmp_path / "second.txt"
+    second.write_text("two\n")
+    subprocess.run(["git", "add", "second.txt"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "--author", "Alice E. <alias@example.com>", "-m", "Alias work"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    commits = get_commits(
+        repo_path=str(tmp_path),
+        author="Alice",
+        since="1970-01-01",
+        author_aliases=AuthorAliases.from_mapping({"Alice": ("Alice E.",)}),
+    )
+
+    assert [commit["subject"] for commit in commits] == ["Alias work", "Alice work"]
+
+
+def test_canonicalize_commit_authors_matches_github_login_only() -> None:
+    commits: list[dict[str, object]] = [
+        {
+            "author_name": "Alice Example",
+            "author_email": "",
+            "author_login": "alice-gh",
+        }
+    ]
+
+    canonicalize_commit_authors(
+        commits,
+        AuthorAliases.from_mapping({"Alice": ("alice-gh",)}),
+    )
+
+    assert commits[0]["author_name"] == "Alice"
 
 
 def test_get_commits_fetches_multiple_authors_separately(monkeypatch) -> None:

@@ -13,6 +13,22 @@ from git_standup.config import (
 )
 
 
+def test_parse_config_supports_author_alias_section() -> None:
+    config = parse_config_text(
+        'provider = "openai"\n'
+        '\n'
+        '[author_aliases]\n'
+        '"Alice Example" = ["alice@example.com", "Alice E."]\n'
+        'Bob = "bob@example.com|Bobby"\n'
+    )
+
+    assert config.provider == "openai"
+    assert config.author_aliases == {
+        "Alice Example": ("alice@example.com", "Alice E."),
+        "Bob": ("bob@example.com", "Bobby"),
+    }
+
+
 def test_config_path_uses_xdg_config_home(tmp_path: Path) -> None:
     path = config_path(env={"XDG_CONFIG_HOME": str(tmp_path)}, home=tmp_path / "home")
 
@@ -25,12 +41,15 @@ def test_config_round_trip_without_storing_secrets(tmp_path: Path) -> None:
         provider="gemini",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         model="gemini-3.5-flash",
+        author_aliases={"Alice Example": ("alice@example.com", "Alice E.")},
     )
 
     save_config(path, config)
     text = path.read_text(encoding="utf-8")
 
     assert "api_key" not in text
+    assert '[author_aliases]' in text
+    assert '"Alice Example" = ["alice@example.com", "Alice E."]' in text
     assert load_config(path) == config
 
 

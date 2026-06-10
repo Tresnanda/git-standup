@@ -33,6 +33,11 @@ from git_standup.ai_env import (
     mask_secret,
     resolve_ai_connection,
 )
+from git_standup.author_aliases import (
+    AuthorAliases,
+    canonicalize_commit_authors,
+    parse_alias_assignments,
+)
 from git_standup.checkpoint import (
     CheckpointUpdate,
     checkpoint_path,
@@ -241,6 +246,15 @@ def _with_json_metadata(
     if budget_metadata is not None:
         metadata.update(budget_metadata)
     return {"_metadata": metadata, **commit_data}
+
+
+def _resolve_author_aliases(
+    config: AIConfig | None,
+    cli_values: list[str] | None,
+) -> AuthorAliases:
+    """Merge saved author aliases with one-off CLI alias assignments."""
+    aliases = AuthorAliases.from_mapping(config.author_aliases if config else {})
+    return aliases.merge(parse_alias_assignments(cli_values))
 
 
 def _generated_timestamp() -> str:
@@ -1470,6 +1484,12 @@ def configure_ai_interactive(
     and a provider is chosen, also prompts for an API key, exports it for the
     current run, and offers to persist it. Returns the saved AIConfig.
     """
+    try:
+        existing_config = load_config(path)
+    except ValueError:
+        existing_config = None
+    existing_author_aliases = existing_config.author_aliases if existing_config else {}
+
     if kind is None:
         if harness:
             kind = "cli"
@@ -1506,6 +1526,7 @@ def configure_ai_interactive(
             harness=chosen,
             base_url=base_url or default_base_url,
             model=model or (_prompt_model(default_model) if prompted else default_model),
+            author_aliases=existing_author_aliases,
         )
     else:
         prompted = provider is None
@@ -1525,6 +1546,7 @@ def configure_ai_interactive(
             base_url=base_url or default_base_url,
             model=model or (_prompt_model(default_model) if prompted else default_model),
             api_key_env=api_key_env,
+            author_aliases=existing_author_aliases,
         )
         if allow_key:
             _prompt_api_key(chosen)
@@ -1540,6 +1562,10 @@ def _print_config(config: AIConfig, path: Path) -> None:
         value = getattr(config, field)
         if value:
             print(f"{field}: {value}")
+    if config.author_aliases:
+        print("author_aliases:")
+        for canonical, aliases in config.author_aliases.items():
+            print(f"  {canonical}: {', '.join(aliases)}")
 
 
 def run_config_command(args: argparse.Namespace) -> int:
@@ -1861,6 +1887,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Filter commits by author. Use 'me' for the current git user.",
     )
     parser.add_argument(
+        "--author-alias",
+        action="append",
+        default=None,
+        metavar="CANONICAL=ALIAS[,ALIAS]",
+        help=(
+            "Merge commits from alternate names, emails, or logins into one author. "
+            "Repeat or add [author_aliases] in config."
+        ),
+    )
+    parser.add_argument(
         "--base-branch",
         type=str,
         default=None,
@@ -2157,6 +2193,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
+        user_config = load_config(config_path())
+        author_aliases = _resolve_author_aliases(user_config, args.author_alias)
+    except ValueError as exc:
+        print(f"Error: invalid config: {exc}", file=sys.stderr)
+        return 1
+
+    try:
         commit_fetch_limit = (
             args.max_commits + 1 if args.max_commits is not None else None
         )
@@ -2187,6 +2230,7 @@ def main(argv: list[str] | None = None) -> int:
                         max_commits=commit_fetch_limit,
                         exclude_merges=args.exclude_merges,
                         include_prs=args.include_prs,
+                        author_aliases=author_aliases,
                         cache=api_cache,
                     )
                     repo_stats = api_cache.repositories.get(_normalize_repo_slug(remote_repo))
@@ -2197,6 +2241,7 @@ def main(argv: list[str] | None = None) -> int:
                         max_commits=args.max_commits,
                         max_files_per_commit=args.max_files_per_commit,
                     )
+                    canonicalize_commit_authors(fetched, author_aliases)
                     if metadata is not None:
                         repo_budget_metadata[repo_name] = metadata
                     if args.pr_status:
@@ -2232,12 +2277,14 @@ def main(argv: list[str] | None = None) -> int:
                             max_commits=commit_fetch_limit,
                             exclude_merges=args.exclude_merges,
                             pathspecs=args.pathspecs,
+                            author_aliases=author_aliases,
                         )
                         fetched, metadata = _apply_output_budget(
                             fetched,
                             max_commits=args.max_commits,
                             max_files_per_commit=args.max_files_per_commit,
                         )
+                        canonicalize_commit_authors(fetched, author_aliases)
                         if metadata is not None:
                             repo_budget_metadata[repo_name] = metadata
                         if args.include_prs:
@@ -2248,6 +2295,7 @@ def main(argv: list[str] | None = None) -> int:
                             if args.pr_status:
                                 enrich_kwargs["include_status"] = True
                             fetched = enrich_commits_with_prs(fetched, **enrich_kwargs)
+                            canonicalize_commit_authors(fetched, author_aliases)
                         for commit in fetched:
                             commit["repository"] = repo_name
                         repo_commits.append((repo_name, fetched))
@@ -2275,6 +2323,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_commits=commit_fetch_limit,
                 exclude_merges=args.exclude_merges,
                 pathspecs=args.pathspecs,
+                author_aliases=author_aliases,
             )
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -2295,6 +2344,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.pr_status:
                 enrich_kwargs["include_status"] = True
             commits = enrich_commits_with_prs(commits, **enrich_kwargs)
+        canonicalize_commit_authors(commits, author_aliases)
 
     if args.changelog:
         if args.ai:

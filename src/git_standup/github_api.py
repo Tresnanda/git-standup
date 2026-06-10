@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
+from git_standup.author_aliases import AuthorAliases
+
 _GITHUB_DATETIME_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?)?$"
 )
@@ -113,6 +115,7 @@ def get_remote_commits(
     max_commits: int | None = None,
     exclude_merges: bool = False,
     include_prs: bool = False,
+    author_aliases: AuthorAliases | None = None,
     cache: GitHubApiRunCache | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch commits for a GitHub repository without cloning it locally.
@@ -130,6 +133,8 @@ def get_remote_commits(
     except GitHubRateLimitError:
         run_cache.mark_rate_limited(repo_slug)
         return []
+    if author_aliases is not None:
+        author_filter = author_aliases.expand_filter(author_filter)
     page = 1
     per_page = 100
     if since:
@@ -274,7 +279,7 @@ def _matches_author(item: dict[str, Any], author: str) -> bool:
         )
         if value
     )
-    return any(re.search(pattern, haystack, re.IGNORECASE) for pattern in patterns)
+    return any(re.search(re.escape(pattern), haystack, re.IGNORECASE) for pattern in patterns)
 
 
 def _commit_from_api_item(
@@ -322,6 +327,8 @@ def _commit_from_api_item(
         "body": body,
         "files": _files_from_detail(detail),
     }
+    if github_author.get("login"):
+        parsed["author_login"] = str(github_author["login"])
     if include_prs and sha:
         pr_endpoint = f"/repos/{repo_slug}/commits/{sha}/pulls"
         pr_headers = ["Accept: application/vnd.github.groot-preview+json"]
