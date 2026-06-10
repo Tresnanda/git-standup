@@ -88,6 +88,125 @@ def test_build_prompt_warns_not_to_embellish_low_signal_commits() -> None:
     assert "say the commit message was vague instead of" in prompt
 
 
+def _json_section(prompt: str, heading: str, next_heading: str) -> dict[str, object]:
+    start = prompt.index(f"{heading}:\n") + len(f"{heading}:\n")
+    end = prompt.index(next_heading, start)
+    return json.loads(prompt[start:end].strip())
+
+
+def _prompt_commit_data(prompt: str) -> dict[str, object]:
+    return _json_section(prompt, "COMMIT DATA", "\n\nGenerate the standup summary now:")
+
+
+def _prompt_budget_metadata(prompt: str) -> dict[str, object]:
+    return _json_section(prompt, "TRUNCATION METADATA", "\n\nIf truncated is true")
+
+
+def test_generate_standup_structurally_budgets_oversized_prompts(monkeypatch) -> None:
+    _RecordingClient.calls = []
+    monkeypatch.setattr("git_standup.ai.httpx.Client", _RecordingClient)
+    monkeypatch.setattr("git_standup.ai._MAX_PROMPT_CHARS", 6_000)
+    commit_data = {
+        "Alice": {
+            "2026-03-10": {
+                "commits": [
+                    {
+                        "hash": "abc123",
+                        "subject": "Add generated fixtures",
+                        "body": "Update the generated fixture set.",
+                        "files": [
+                            {
+                                "path": f"fixtures/generated_{index:03}.json",
+                                "insertions": 10,
+                                "deletions": 0,
+                            }
+                            for index in range(120)
+                        ],
+                    }
+                ],
+                "stats": {},
+            }
+        }
+    }
+
+    result = generate_standup(commit_data, api_key="test-api-key")
+
+    assert result == "Standup summary"
+    prompt = _RecordingClient.calls[0]["json"]["messages"][0]["content"]
+    assert len(prompt) <= 6_000
+    assert "[truncated due to length]" not in prompt
+    budgeted_data = _prompt_commit_data(prompt)
+    budgeted_commit = budgeted_data["Alice"]["2026-03-10"]["commits"][0]
+    assert len(budgeted_commit["files"]) < 120
+    metadata = _prompt_budget_metadata(prompt)
+    structured = metadata["structured_prompt_budget"]
+    assert structured["truncated"] is True
+    assert structured["omitted_counts"]["files"] > 0
+    assert structured["omitted"]["files"][0]["path"].startswith("fixtures/generated_")
+
+
+def test_generate_standup_records_omitted_repositories_and_authors(monkeypatch) -> None:
+    _RecordingClient.calls = []
+    monkeypatch.setattr("git_standup.ai.httpx.Client", _RecordingClient)
+    monkeypatch.setattr("git_standup.ai._MAX_PROMPT_CHARS", 4_000)
+    commit_data = {
+        "_repositories": {
+            "Tresnanda/api": {
+                "Alice": {
+                    "2026-03-10": {
+                        "commits": [
+                            {
+                                "hash": "keep123",
+                                "subject": "Keep API summary",
+                                "body": "Small enough to keep.",
+                                "files": [
+                                    {"path": "src/api.py", "insertions": 3, "deletions": 1}
+                                ],
+                            }
+                        ],
+                        "stats": {},
+                    }
+                }
+            },
+            "Tresnanda/web": {
+                "Bob": {
+                    "2026-03-10": {
+                        "commits": [
+                            {
+                                "hash": f"drop{index:03}",
+                                "subject": f"Large web update {index}",
+                                "body": "Details " + ("x" * 500),
+                                "files": [
+                                    {
+                                        "path": f"src/web_{index}.py",
+                                        "insertions": index,
+                                        "deletions": 0,
+                                    }
+                                ],
+                            }
+                            for index in range(12)
+                        ],
+                        "stats": {},
+                    }
+                }
+            },
+        }
+    }
+
+    result = generate_standup(commit_data, api_key="test-api-key")
+
+    assert result == "Standup summary"
+    prompt = _RecordingClient.calls[0]["json"]["messages"][0]["content"]
+    assert len(prompt) <= 4_000
+    budgeted_data = _prompt_commit_data(prompt)
+    assert set(budgeted_data["_repositories"]) == {"Tresnanda/api"}
+    metadata = _prompt_budget_metadata(prompt)
+    structured = metadata["structured_prompt_budget"]
+    assert structured["omitted"]["repositories"] == ["Tresnanda/web"]
+    assert structured["omitted"]["authors"] == ["Bob"]
+    assert structured["omitted_counts"]["commits"] == 12
+
+
 def _commit_data_with_secrets() -> dict:
     return {
         "Alice": {
