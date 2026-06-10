@@ -13,11 +13,13 @@ Generate standup-ready summaries from Git history.
 - Exports paste-ready Markdown for GitHub, Slack, Notion, or weekly notes.
 - Prints aggregate-only stats for dashboards or quick check-ins with `--stats-only`.
 - Builds non-AI changelog Markdown for release notes with `--changelog`.
+- Builds concise non-AI planning insights with themes, likely product areas, review/rollout risks, and follow-up questions using `--insights`.
 - Builds non-AI team workflow digests with owner sections, risk radar, and follow-up questions using `--team-digest`.
 - Can run against another repository path with `--repo`.
 - Can run against one or more GitHub repositories with repeatable `--remote-repo`.
 - Can focus reports on one or more paths with repeatable `--path` filters.
 - Supports exact report windows with `--since` and `--until`.
+- Remembers opt-in report checkpoints with `--since-last` and `--write-checkpoint`.
 - Can hide merge commits with `--exclude-merges` for less noisy standups.
 - Can opt into PR-aware digests with `--include-prs` / `--pr-digest`.
 - Writes summaries directly to files with `--output`.
@@ -112,7 +114,9 @@ Output format:
 > Markdown - Paste-ready for Slack, Notion, or GitHub.
   Plain text - Simple terminal summary.
   JSON - Structured data for scripts or automation.
+  Stats only - Aggregate counts without per-commit details.
   Changelog - Release-note Markdown grouped by conventional commit type.
+  Planning insights - Themes, product areas, risks, and follow-ups for weekly planning.
 
 Polish with AI?
 > Yes
@@ -120,7 +124,7 @@ Polish with AI?
 ```
 
 The wizard asks for a format, then whether to polish it with AI (skipped for
-JSON and changelog). Markdown and Plain text can each be produced with or
+JSON, stats, changelog, and insights). Markdown and Plain text can each be produced with or
 without AI. If no AI provider is detected, the wizard offers to set one up on
 the fly. When the report is printed instead of saved, press `c` to copy it to
 the clipboard.
@@ -209,6 +213,17 @@ Generate release-note style changelog Markdown without AI:
 git-standup --since 2026-01-01 --until 2026-01-07 --changelog
 ```
 
+Generate weekly-planning insights without AI:
+
+```bash
+git-standup --insights --include-prs
+```
+
+`--insights` emits a compact Markdown section with cross-repo themes, likely
+product areas, review/rollout risks, and suggested follow-ups. It is designed to
+stay useful without AI while also being easy to paste into an AI-assisted weekly
+planning workflow.
+
 Generate a team workflow digest without AI:
 
 ```bash
@@ -241,6 +256,23 @@ Generate an exact reporting window:
 ```bash
 git-standup --since 2026-01-01 --until 2026-01-07 --markdown
 ```
+
+Generate only changes since your last checkpointed report:
+
+```bash
+git-standup --since-last --write-checkpoint --no-ai
+```
+
+`--since-last` is opt-in and starts the report from the repository's saved
+checkpoint instead of a date you type by hand. `--write-checkpoint` stores the
+current timestamp after a successful report, so the next run can pick up from
+there. Use `--write-checkpoint` on an initial normal report to seed the file, or
+combine both flags for a recurring daily/standup workflow. Checkpoints are
+stored as non-secret user data at `$XDG_DATA_HOME/git-standup/checkpoints.json`
+or `~/.local/share/git-standup/checkpoints.json` on macOS/Linux, and under
+`%LOCALAPPDATA%\git-standup\checkpoints.json` on Windows. Local repositories are
+tracked by resolved repo root; `--remote-repo` entries are tracked by
+`owner/name`, so multi-repo reports can use separate per-repository checkpoints.
 
 Hide merge commits for a cleaner activity summary:
 
