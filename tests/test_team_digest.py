@@ -1,7 +1,7 @@
 import pytest
 
 from git_standup import cli
-from git_standup.formatter import build_team_digest_output
+from git_standup.formatter import build_insights_output, build_team_digest_output
 
 
 def _commit(
@@ -116,3 +116,124 @@ def test_team_digest_cli_uses_non_ai_formatter(monkeypatch: pytest.MonkeyPatch, 
     assert "_Template: Linear_" in captured.out
     assert "revert risky auth change" in captured.out
     assert "Warning: --ai has no effect with --team-digest" in captured.err
+
+
+def test_insights_formatter_surfaces_planning_themes_areas_risks_and_followups() -> None:
+    commit_data = cli._build_commit_data(
+        [
+            _commit(
+                "feat(auth): add login passkey rollout",
+                hash_="fea111111",
+                files=[
+                    {"path": "src/auth/passkeys.py", "insertions": 80, "deletions": 4},
+                    {"path": "tests/test_passkeys.py", "insertions": 30, "deletions": 0},
+                ],
+                pull_request={
+                    "number": 42,
+                    "title": "Add passkeys",
+                    "url": "https://github.com/Tresnanda/git-standup/pull/42",
+                },
+            ),
+            _commit(
+                "fix login redirect rollback",
+                hash_="fix222222",
+                author="Bob",
+                body="Rollback risky auth path before rollout.",
+                files=[{"path": "src/auth/login.py", "insertions": 6, "deletions": 12}],
+            ),
+            _commit(
+                "docs: update onboarding guide",
+                hash_="doc333333",
+                author="Casey",
+                files=[{"path": "docs/onboarding.md", "insertions": 14, "deletions": 2}],
+            ),
+        ]
+    )
+
+    output = build_insights_output(commit_data)
+
+    assert output.startswith("# Planning Insights\n")
+    assert "## Themes" in output
+    assert "Feature work: 1 commit(s)" in output
+    assert "Fixes and stabilization: 1 commit(s)" in output
+    assert "## Likely Product Areas" in output
+    assert "Auth/Security" in output
+    assert "Docs/Enablement" in output
+    assert "## Review / Rollout Risks" in output
+    assert "Bob: `fix22222` fix login redirect rollback" in output
+    assert "keyword: revert" in output
+    assert "## Suggested Follow-ups" in output
+    assert "Confirm reviewer/merge plan for PR #42" in output
+    assert "What validation confirms `fix22222` fixed the issue?" in output
+
+
+def test_insights_formatter_handles_multiple_repositories_concisely() -> None:
+    commit_data = {
+        "_repositories": {
+            "Tresnanda/api": cli._build_commit_data(
+                [
+                    _commit(
+                        "feat(api): add usage endpoint",
+                        hash_="api111111",
+                        files=[{"path": "src/api/usage.py", "insertions": 20, "deletions": 1}],
+                    )
+                ]
+            ),
+            "Tresnanda/web": cli._build_commit_data(
+                [
+                    _commit(
+                        "feat(ui): add usage dashboard",
+                        hash_="web222222",
+                        author="Bob",
+                        files=[
+                            {
+                                "path": "src/components/UsageDashboard.tsx",
+                                "insertions": 40,
+                                "deletions": 3,
+                            }
+                        ],
+                    )
+                ]
+            ),
+        }
+    }
+
+    output = build_insights_output(commit_data)
+
+    assert "Tresnanda/api" in output
+    assert "Tresnanda/web" in output
+    assert "API/Backend" in output
+    assert "Frontend/UI" in output
+
+
+def test_insights_cli_uses_non_ai_formatter(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli,
+        "get_commits",
+        lambda **_: [
+            _commit(
+                "WIP passkey rollout",
+                hash_="wip444444",
+                files=[{"path": "src/auth/passkeys.py", "insertions": 5, "deletions": 1}],
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        cli,
+        "generate_standup",
+        lambda **_: (_ for _ in ()).throw(AssertionError("insights should be non-AI")),
+    )
+    monkeypatch.setattr(
+        cli,
+        "generate_standup_with_harness",
+        lambda **_: (_ for _ in ()).throw(AssertionError("insights should be non-AI")),
+    )
+
+    exit_code = cli.main(["--insights", "--ai"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "# Planning Insights" in captured.out
+    assert "Auth/Security" in captured.out
+    assert "WIP passkey rollout" in captured.out
+    assert "Warning: --ai has no effect with --insights" in captured.err

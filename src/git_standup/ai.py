@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -11,6 +12,49 @@ import httpx
 
 # Maximum characters for the prompt — conservative for small models
 _MAX_PROMPT_CHARS = 120_000
+
+_REDACTED = "[REDACTED]"
+_SENSITIVE_KEY_FRAGMENT = (
+    r"api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|"
+    r"id[_-]?token|token|password|passwd|pwd|secret|client[_-]?secret|"
+    r"private[_-]?key"
+)
+_SENSITIVE_KEY_NAME_RE = re.compile(
+    rf"(?:^|[_\-.])(?:{_SENSITIVE_KEY_FRAGMENT})(?:$|[_\-.])",
+    re.IGNORECASE,
+)
+_SENSITIVE_KEY_VALUE_RE = re.compile(
+    rf"\b(?P<key>[A-Za-z0-9_.-]*(?:{_SENSITIVE_KEY_FRAGMENT})[A-Za-z0-9_.-]*)"
+    r"(?P<sep>\s*[:=]\s*)"
+    r"(?:"
+    r"(?P<quote>['\"])(?P<quoted_value>.*?)(?P=quote)"
+    r"|(?P<value>[^\s,'\";)}\]]+)"
+    r")",
+    re.IGNORECASE,
+)
+_URL_USERINFO_RE = re.compile(
+    r"\b(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<userinfo>[^/@\s]+)@(?P<host>[^/\s]+)",
+    re.IGNORECASE,
+)
+_BEARER_TOKEN_RE = re.compile(
+    r"\b(?P<prefix>Bearer\s+)(?P<value>[A-Za-z0-9._~+/=-]{8,})",
+    re.IGNORECASE,
+)
+_COMMON_SECRET_TOKEN_RE = re.compile(
+    r"\b(?:sk(?:_live|_test|_proj)?[_-][A-Za-z0-9._-]{6,}|"
+    r"sk-" r"ant-api03-[A-Za-z0-9._-]{10,}|"
+    r"sk-or-v1-[A-Za-z0-9._-]{10,}|"
+    r"ghp_[A-Za-z0-9._-]{6,}|"
+    r"github_pat_[A-Za-z0-9._-]{10,}|"
+    r"glpat-[A-Za-z0-9._-]{10,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"AIza[0-9A-Za-z_-]{20,}|"
+    r"ya29\.[0-9A-Za-z_-]{20,}|"
+    r"hf_[A-Za-z0-9]{10,}|"
+    r"gsk_[A-Za-z0-9]{10,}|"
+    r"xai-[A-Za-z0-9_-]{10,})\b"
+)
 
 
 def _is_azure_deployment_url(url_base: str) -> bool:
@@ -56,6 +100,55 @@ def _format_instruction(output_format: str) -> str:
     )
 
 
+def _is_sensitive_key_name(value: str) -> bool:
+    """Return True when a mapping key is a conventional secret-bearing name."""
+    return bool(_SENSITIVE_KEY_NAME_RE.search(value))
+
+
+def _redact_secret_text(value: str) -> str:
+    """Mask API-key/token/password-looking values while retaining surrounding context."""
+
+    def replace_key_value(match: re.Match[str]) -> str:
+        quote = match.group("quote") or ""
+        return f"{match.group('key')}{match.group('sep')}{quote}{_REDACTED}{quote}"
+
+    value = _URL_USERINFO_RE.sub(
+        lambda match: f"{match.group('scheme')}{_REDACTED}@{match.group('host')}",
+        value,
+    )
+    value = _SENSITIVE_KEY_VALUE_RE.sub(replace_key_value, value)
+    value = _BEARER_TOKEN_RE.sub(lambda match: match.group("prefix") + _REDACTED, value)
+    return _COMMON_SECRET_TOKEN_RE.sub(_REDACTED, value)
+
+
+def _redact_mapping_key(value: Any) -> Any:
+    """Preserve mapping keys except when the key text itself contains a secret value."""
+    if isinstance(value, str):
+        return _redact_secret_text(value)
+    return value
+
+
+def _redact_for_ai_prompt(value: Any, *, key_name: str | None = None) -> Any:
+    """Return a copy of prompt data with secret-looking strings redacted."""
+    if isinstance(value, str):
+        if key_name is not None and _is_sensitive_key_name(key_name):
+            return _REDACTED
+        return _redact_secret_text(value)
+    if isinstance(value, list):
+        return [_redact_for_ai_prompt(item, key_name=key_name) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_for_ai_prompt(item, key_name=key_name) for item in value)
+    if isinstance(value, dict):
+        return {
+            _redact_mapping_key(key): _redact_for_ai_prompt(
+                item,
+                key_name=key if isinstance(key, str) else None,
+            )
+            for key, item in value.items()
+        }
+    return value
+
+
 def _build_prompt(
     commit_data: dict[str, Any],
     style: str = "standup",
@@ -63,12 +156,14 @@ def _build_prompt(
     output_format: str = "text",
 ) -> str:
     """Build a structured prompt from commit data."""
+    redacted_commit_data = _redact_for_ai_prompt(commit_data)
     metadata_section = ""
     if budget_metadata is not None:
+        redacted_budget_metadata = _redact_for_ai_prompt(budget_metadata)
         metadata_section = f"""
 
 TRUNCATION METADATA:
-{json.dumps(budget_metadata, indent=2, default=str)}
+{json.dumps(redacted_budget_metadata, indent=2, default=str)}
 
 If truncated is true, explicitly note that the summary is based on a budgeted
 subset of the git data and avoid inferring details from omitted commits/files."""
@@ -98,7 +193,7 @@ Evidence rules:
 {metadata_section}
 
 COMMIT DATA:
-{json.dumps(commit_data, indent=2, default=str)}
+{json.dumps(redacted_commit_data, indent=2, default=str)}
 
 Generate the standup summary now:"""
 
