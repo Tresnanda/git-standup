@@ -14,6 +14,7 @@ from git_standup.formatter import build_markdown_output, build_stats_output
 @pytest.fixture(autouse=True)
 def isolated_user_ai_settings(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(cli, "config_path", lambda: tmp_path / "config.toml")
+    monkeypatch.setattr(cli, "_generated_timestamp", lambda: "2026-06-06T12:00:00Z")
     for key in (
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
@@ -66,6 +67,21 @@ class _TempDir:
         return None
 
 
+def _default_json_metadata(**overrides: object) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "generated_at": "2026-06-06T12:00:00Z",
+        "query_window": {"days": 7, "since": None, "until": None},
+        "author": None,
+        "base_branch": None,
+        "exclude_merges": False,
+        "include_prs": False,
+        "pathspecs": [],
+        "repository": {"type": "local", "path": "."},
+    }
+    metadata.update(overrides)
+    return metadata
+
+
 def test_json_mode_prints_structured_commit_data(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits())
 
@@ -75,7 +91,7 @@ def test_json_mode_prints_structured_commit_data(monkeypatch: pytest.MonkeyPatch
     output = json.loads(capsys.readouterr().out)
     assert output["Alice"]["2026-03-10"]["stats"]["total_commits"] == 1
     assert output["Alice"]["2026-03-10"]["commits"][0]["subject"] == "Add authentication"
-    assert "_metadata" not in output
+    assert output["_metadata"] == _default_json_metadata()
 
 
 def test_include_prs_enriches_json_output_when_requested(
@@ -103,6 +119,7 @@ def test_include_prs_enriches_json_output_when_requested(
     assert exit_code == 0
     assert captured == {"repo_path": None, "query_github": True}
     output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"] == _default_json_metadata(include_prs=True)
     pr = output["Alice"]["2026-03-10"]["commits"][0]["pull_request"]
     assert pr["number"] == 42
     assert pr["title"] == "Add PR-aware digest"
@@ -171,6 +188,7 @@ def test_json_mode_includes_budget_metadata_when_limited(
     assert captured["max_commits"] == 3
     output = json.loads(capsys.readouterr().out)
     assert output["_metadata"] == {
+        **_default_json_metadata(),
         "truncated": True,
         "limits": {"max_commits": 2, "max_files_per_commit": 1},
         "commits_included": 2,
@@ -205,7 +223,7 @@ def test_json_mode_includes_pathspec_metadata(
     assert exit_code == 0
     assert captured["pathspecs"] == ["src", "tests"]
     output = json.loads(capsys.readouterr().out)
-    assert output["_metadata"] == {"pathspecs": ["src", "tests"]}
+    assert output["_metadata"] == _default_json_metadata(pathspecs=["src", "tests"])
 
 
 def test_json_mode_groups_multiple_remote_repositories(
@@ -245,6 +263,13 @@ def test_json_mode_groups_multiple_remote_repositories(
         ("Tresnanda/web", str(tmp_path / "Tresnanda__web")),
     ]
     output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"] == _default_json_metadata(
+        repository={
+            "type": "remote",
+            "repositories": ["Tresnanda/api", "Tresnanda/web"],
+            "backend": "clone",
+        }
+    )
     assert set(output["_repositories"]) == {"Tresnanda/api", "Tresnanda/web"}
     assert output["_repositories"]["Tresnanda/api"]["Alice"]["2026-03-10"]["commits"][0][
         "subject"
@@ -577,6 +602,19 @@ def test_remote_api_backend_uses_github_api_without_cloning(
         "/repos/Tresnanda/api/commits/abcdef1234567890/pulls",
     ]
     output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"]["query_window"] == {
+        "days": 7,
+        "since": "2026-03-01",
+        "until": "2026-03-11",
+    }
+    assert output["_metadata"]["author"] == "Alice"
+    assert output["_metadata"]["exclude_merges"] is True
+    assert output["_metadata"]["include_prs"] is True
+    assert output["_metadata"]["repository"] == {
+        "type": "remote",
+        "repositories": ["Tresnanda/api"],
+        "backend": "api",
+    }
     repo_output = output["_repositories"]["Tresnanda/api"]
     commit = repo_output["Alice"]["2026-03-10"]["commits"][0]
     assert commit["hash"] == "abcdef1234567890"
@@ -808,7 +846,10 @@ def test_changelog_mode_notes_low_signal_commit_messages(
     assert "generic subject \\`fix\\`" in output
 
 
-def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_passes_repo_and_exact_dates_to_gitlog(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
     captured: dict[str, object] = {}
 
     def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
@@ -825,6 +866,10 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
             "2026-01-01",
             "--until",
             "2026-01-07",
+            "--author",
+            "Alice",
+            "--base-branch",
+            "main",
             "--path",
             "src",
             "--exclude-merges",
@@ -836,8 +881,19 @@ def test_main_passes_repo_and_exact_dates_to_gitlog(monkeypatch: pytest.MonkeyPa
     assert captured["repo_path"] == "/workspace/app"
     assert captured["since"] == "2026-01-01"
     assert captured["until"] == "2026-01-07"
+    assert captured["author"] == "Alice"
+    assert captured["base_branch"] == "main"
     assert captured["pathspecs"] == ["src"]
     assert captured["exclude_merges"] is True
+    output = json.loads(capsys.readouterr().out)
+    assert output["_metadata"] == _default_json_metadata(
+        query_window={"days": 7, "since": "2026-01-01", "until": "2026-01-07"},
+        author="Alice",
+        base_branch="main",
+        exclude_merges=True,
+        pathspecs=["src"],
+        repository={"type": "local", "path": "/workspace/app"},
+    )
 
 
 def test_parse_args_supports_easy_presets_and_positional_repo() -> None:

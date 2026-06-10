@@ -14,7 +14,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -209,17 +209,53 @@ def _with_commit_quality_in_data(commit_data: dict[str, Any]) -> dict[str, Any]:
 def _with_json_metadata(
     commit_data: dict[str, Any],
     budget_metadata: dict[str, Any] | None,
-    pathspecs: list[str] | None,
+    provenance_metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    """Add JSON-only metadata when optional report filters/limits are supplied."""
-    metadata: dict[str, Any] = {}
+    """Add JSON-only provenance and optional budget metadata."""
+    metadata: dict[str, Any] = dict(provenance_metadata)
     if budget_metadata is not None:
         metadata.update(budget_metadata)
-    if pathspecs:
-        metadata["pathspecs"] = list(pathspecs)
-    if not metadata:
-        return commit_data
     return {"_metadata": metadata, **commit_data}
+
+
+def _generated_timestamp() -> str:
+    """Return the JSON report generation time as a UTC ISO-8601 timestamp."""
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _build_json_provenance_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    """Build JSON-only report provenance metadata from parsed CLI options."""
+    if args.remote_repos:
+        repository_metadata = {
+            "type": "remote",
+            "repositories": list(args.remote_repos),
+            "backend": args.remote_backend,
+        }
+    else:
+        repository_metadata = {
+            "type": "local",
+            "path": args.repo or ".",
+        }
+
+    return {
+        "generated_at": _generated_timestamp(),
+        "query_window": {
+            "days": args.days,
+            "since": args.since,
+            "until": args.until,
+        },
+        "author": args.author,
+        "base_branch": args.base_branch,
+        "exclude_merges": bool(args.exclude_merges),
+        "include_prs": bool(args.include_prs),
+        "pathspecs": list(args.pathspecs or []),
+        "repository": repository_metadata,
+    }
 
 
 def _build_multi_repo_commit_data(
@@ -2113,7 +2149,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         output = build_json_output(
-            _with_json_metadata(commit_data, budget_metadata, args.pathspecs)
+            _with_json_metadata(
+                commit_data,
+                budget_metadata,
+                _build_json_provenance_metadata(args),
+            )
         )
         _emit(output + "\n", args.output, lambda: print(output))
         return 0
