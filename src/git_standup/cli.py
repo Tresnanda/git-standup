@@ -14,9 +14,10 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -32,12 +33,22 @@ from git_standup.ai_env import (
     mask_secret,
     resolve_ai_connection,
 )
+from git_standup.checkpoint import (
+    CheckpointUpdate,
+    checkpoint_path,
+    checkpoint_since,
+    load_checkpoints,
+    local_repository_id,
+    remote_repository_id,
+    update_checkpoints,
+)
 from git_standup.clipboard import clipboard_available, copy_to_clipboard, read_single_key
 from git_standup.config import AIConfig, config_path, load_config, reset_config, save_config
 from git_standup.env_persist import persist_env_var
 from git_standup.formatter import (
     TEAM_DIGEST_TEMPLATES,
     build_changelog_output,
+    build_insights_output,
     build_json_output,
     build_markdown_output,
     build_stats_output,
@@ -47,11 +58,17 @@ from git_standup.formatter import (
     print_ai_standup,
     print_text_standup,
 )
-from git_standup.github_api import get_remote_commits, validate_remote_api_options
+from git_standup.github_api import (
+    GitHubApiRunCache,
+    _normalize_repo_slug,
+    get_remote_commits,
+    validate_remote_api_options,
+)
 from git_standup.gitlog import (
     compute_stats,
     describe_commit_quality,
     get_commits,
+    get_repo_root,
     group_by_author,
     group_by_date,
 )
@@ -79,6 +96,12 @@ class UpdateCheck:
     latest_commit: str | None = None
 
 
+@dataclass(frozen=True)
+class _CheckpointTarget:
+    repository_id: str
+    label: str
+
+
 def _build_commit_data(
     commits: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -103,6 +126,8 @@ def _build_commit_data(
                     item["truncated"] = c["truncated"]
                 if c.get("pull_request"):
                     item["pull_request"] = c["pull_request"]
+                if c.get("github_api"):
+                    item["github_api"] = c["github_api"]
                 if c.get("issues"):
                     item["issues"] = c["issues"]
                 quality = c.get("quality") or describe_commit_quality(c)
@@ -209,17 +234,53 @@ def _with_commit_quality_in_data(commit_data: dict[str, Any]) -> dict[str, Any]:
 def _with_json_metadata(
     commit_data: dict[str, Any],
     budget_metadata: dict[str, Any] | None,
-    pathspecs: list[str] | None,
+    provenance_metadata: dict[str, Any],
 ) -> dict[str, Any]:
-    """Add JSON-only metadata when optional report filters/limits are supplied."""
-    metadata: dict[str, Any] = {}
+    """Add JSON-only provenance and optional budget metadata."""
+    metadata: dict[str, Any] = dict(provenance_metadata)
     if budget_metadata is not None:
         metadata.update(budget_metadata)
-    if pathspecs:
-        metadata["pathspecs"] = list(pathspecs)
-    if not metadata:
-        return commit_data
     return {"_metadata": metadata, **commit_data}
+
+
+def _generated_timestamp() -> str:
+    """Return the JSON report generation time as a UTC ISO-8601 timestamp."""
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _build_json_provenance_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    """Build JSON-only report provenance metadata from parsed CLI options."""
+    if args.remote_repos:
+        repository_metadata = {
+            "type": "remote",
+            "repositories": list(args.remote_repos),
+            "backend": args.remote_backend,
+        }
+    else:
+        repository_metadata = {
+            "type": "local",
+            "path": args.repo or ".",
+        }
+
+    return {
+        "generated_at": _generated_timestamp(),
+        "query_window": {
+            "days": args.days,
+            "since": args.since,
+            "until": args.until,
+        },
+        "author": args.author,
+        "base_branch": args.base_branch,
+        "exclude_merges": bool(args.exclude_merges),
+        "include_prs": bool(args.include_prs),
+        "pathspecs": list(args.pathspecs or []),
+        "repository": repository_metadata,
+    }
 
 
 def _build_multi_repo_commit_data(
@@ -565,6 +626,8 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
         args.append("--json")
     elif output_format == "changelog":
         args.append("--changelog")
+    elif output_format == "insights":
+        args.append("--insights")
     elif output_format == "stats":
         args.append("--stats-only")
     elif output_format == "markdown":
@@ -586,9 +649,65 @@ def _today_start_string(now: datetime | None = None) -> str:
     return today_start.strftime("%Y-%m-%d %H:%M:%S %z")
 
 
+def _checkpoint_timestamp(now: datetime | None = None) -> str:
+    """Return the timestamp format stored for since-last checkpoints."""
+    current = now or datetime.now().astimezone()
+    return current.strftime("%Y-%m-%d %H:%M:%S %z")
+
+
+def _remote_checkpoint_target(remote_repo: str) -> _CheckpointTarget:
+    label = _remote_repo_label(remote_repo)
+    return _CheckpointTarget(remote_repository_id(label), label)
+
+
+def _checkpoint_targets(args: argparse.Namespace) -> list[_CheckpointTarget]:
+    """Build repository checkpoint targets for local or remote report inputs."""
+    if args.remote_repos:
+        return [_remote_checkpoint_target(remote_repo) for remote_repo in args.remote_repos]
+    repo_root = get_repo_root(args.repo)
+    return [_CheckpointTarget(local_repository_id(repo_root), repo_root)]
+
+
+def _since_last_by_target(targets: list[_CheckpointTarget]) -> dict[str, str]:
+    """Load since-last timestamps for all targets, or raise when any are missing."""
+    path = checkpoint_path()
+    data = load_checkpoints(path)
+    missing: list[str] = []
+    since_by_id: dict[str, str] = {}
+    for target in targets:
+        since = checkpoint_since(data, target.repository_id)
+        if since is None:
+            missing.append(target.label)
+        else:
+            since_by_id[target.repository_id] = since
+    if missing:
+        missing_text = ", ".join(missing)
+        raise RuntimeError(
+            f"No since-last checkpoint found for {missing_text}. "
+            "Run a report with --write-checkpoint first, or use --since."
+        )
+    return since_by_id
+
+
+def _write_report_checkpoints(
+    targets: list[_CheckpointTarget],
+    timestamp: str,
+) -> None:
+    """Persist a successful report checkpoint for all report repositories."""
+    update_checkpoints(
+        [
+            CheckpointUpdate(target.repository_id, timestamp, target.label)
+            for target in targets
+        ],
+        checkpoint_path(),
+    )
+
+
 def _default_output_path(output_format: str) -> str:
     if output_format == "changelog":
         return "changelog.md"
+    if output_format == "insights":
+        return "standup-insights.md"
     if output_format == "stats":
         return "standup-stats.txt"
     if output_format == "markdown":
@@ -1170,14 +1289,31 @@ def _choose_remote_repositories() -> list[str]:
 
 
 def _remote_repo_label(repo: str) -> str:
-    cleaned = repo.rstrip("/")
+    """Return a credential-free owner/repo label for remote display/checkpoints."""
+    cleaned = repo.strip().rstrip("/")
     if cleaned.endswith(".git"):
         cleaned = cleaned[:-4]
-    if cleaned.startswith("https://github.com/"):
-        cleaned = cleaned.removeprefix("https://github.com/")
-    elif cleaned.startswith("git@github.com:"):
+
+    if cleaned.startswith("git@github.com:"):
         cleaned = cleaned.removeprefix("git@github.com:")
-    return cleaned
+    elif "://" in cleaned:
+        parsed = urlsplit(cleaned)
+        if parsed.hostname != "github.com":
+            raise RuntimeError(f"GitHub remote repositories must use github.com, got {repo!r}")
+        if parsed.password is not None or (parsed.username not in (None, "git")):
+            raise RuntimeError("Refusing credential-bearing GitHub remote URL")
+        if parsed.query or parsed.fragment:
+            raise RuntimeError("Refusing credential-bearing GitHub remote URL")
+        cleaned = parsed.path.lstrip("/")
+    elif "@" in cleaned or ":" in cleaned:
+        raise RuntimeError("Refusing credential-bearing GitHub remote URL")
+
+    if cleaned.endswith(".git"):
+        cleaned = cleaned[:-4]
+    parts = [part for part in cleaned.split("/") if part]
+    if len(parts) != 2 or not all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+        raise RuntimeError(f"GitHub remote repositories must be owner/repo, got {repo!r}")
+    return f"{parts[0]}/{parts[1]}"
 
 
 def _remote_repo_url(repo: str) -> str:
@@ -1568,12 +1704,17 @@ def run_wizard() -> int:
                     "Changelog",
                     "Release-note Markdown grouped by conventional commit type.",
                 ),
+                (
+                    "insights",
+                    "Planning insights",
+                    "Themes, product areas, risks, and follow-ups for weekly planning.",
+                ),
             ],
             "markdown",
         )
 
         _wizard_separator()
-        if answers["format"] in {"json", "changelog", "stats"}:
+        if answers["format"] in {"json", "changelog", "insights", "stats"}:
             answers["ai"] = False
         elif _ai_provider_available(ai_report):
             answers["ai"] = _confirm("Polish with AI?", default=True)
@@ -1627,6 +1768,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --remote-repo owner/api --remote-backend api --json\n"
         "  git-standup --path src --path tests  # Only commits touching paths\n"
         "  git-standup --since 2026-01-01 --until 2026-01-07\n"
+        "  git-standup --since-last --write-checkpoint --no-ai\n"
         "  git-standup --author me         # My commits only\n"
         "  git-standup --exclude-merges   # Hide merge commits\n"
         "  git-standup --include-prs      # Include PR numbers/titles/URLs\n"
@@ -1637,6 +1779,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup --markdown --no-ai  # Raw Markdown summary without AI\n"
         "  git-standup --stats-only       # Aggregate stats without commit details\n"
         "  git-standup --changelog        # Release-note Markdown without AI\n"
+        "  git-standup --insights         # Planning insights without AI\n"
         "  git-standup --json              # Raw JSON output\n"
         "  git-standup --max-commits 20 --max-files-per-commit 10\n"
         "  git-standup --markdown --output standup.md\n"
@@ -1688,6 +1831,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=_date_string,
         default=None,
         help="Start date for the report window (YYYY-MM-DD). Overrides --days.",
+    )
+    parser.add_argument(
+        "--since-last",
+        action="store_true",
+        help=(
+            "Start from this repository's last --write-checkpoint timestamp "
+            "instead of remembering a --since date"
+        ),
+    )
+    parser.add_argument(
+        "--write-checkpoint",
+        action="store_true",
+        help=(
+            "After a successful report, store the current timestamp for future "
+            "--since-last runs"
+        ),
     )
     parser.add_argument(
         "--until",
@@ -1803,6 +1962,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="PR age in days since last update before the workflow board flags stale follow-up",
     )
     parser.add_argument(
+        "--insights",
+        action="store_true",
+        help=(
+            "Output concise planning insights with themes, likely product areas, "
+            "review/rollout risks, and follow-ups (always no AI)"
+        ),
+    )
+    parser.add_argument(
         "--template",
         choices=TEAM_DIGEST_TEMPLATES,
         default="slack",
@@ -1904,6 +2071,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             args.repo = target
     if args.changelog and args.json:
         parser.error("--changelog cannot be combined with --json")
+    if args.since_last and args.since:
+        parser.error("--since-last cannot be combined with --since")
     if args.changelog and args.markdown:
         parser.error("--changelog cannot be combined with --markdown; it already emits Markdown")
     if args.team_digest and args.json:
@@ -1924,10 +2093,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error("--workflow-board cannot be combined with --changelog")
         if args.stats_only:
             parser.error("--workflow-board cannot be combined with --stats-only")
+        if args.insights:
+            parser.error("--workflow-board cannot be combined with --insights")
         args.include_prs = True
         args.pr_status = True
     if args.pr_status:
         args.include_prs = True
+    if args.insights and args.json:
+        parser.error("--insights cannot be combined with --json")
+    if args.insights and args.markdown:
+        parser.error("--insights cannot be combined with --markdown; it already emits Markdown")
+    if args.insights and args.changelog:
+        parser.error("--insights cannot be combined with --changelog")
+    if args.insights and args.team_digest:
+        parser.error("--insights cannot be combined with --team-digest")
     if args.remote_repos and args.repo is not None:
         parser.error("--remote-repo cannot be combined with --repo or a positional repo path")
     del args.tokens
@@ -1955,6 +2134,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "config":
         return run_config_command(args)
 
+    checkpoint_targets: list[_CheckpointTarget] = []
+    checkpoint_timestamp = _checkpoint_timestamp() if args.write_checkpoint else ""
+    since_by_checkpoint_id: dict[str, str] = {}
+    try:
+        if args.since_last or args.write_checkpoint:
+            checkpoint_targets = _checkpoint_targets(args)
+        if args.since_last:
+            since_by_checkpoint_id = _since_last_by_target(checkpoint_targets)
+    except (RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    def _finish_success() -> int:
+        if not args.write_checkpoint:
+            return 0
+        try:
+            _write_report_checkpoints(checkpoint_targets, checkpoint_timestamp)
+        except (OSError, ValueError) as exc:
+            print(f"Error: could not write since-last checkpoint: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
     try:
         commit_fetch_limit = (
             args.max_commits + 1 if args.max_commits is not None else None
@@ -1964,24 +2165,33 @@ def main(argv: list[str] | None = None) -> int:
         if args.remote_repos:
             repo_commits: list[tuple[str, list[dict[str, Any]]]] = []
             repo_budget_metadata: dict[str, Any] = {}
+            api_run_metadata: dict[str, Any] | None = None
             all_commits: list[dict[str, Any]] = []
             if args.remote_backend == "api":
                 validate_remote_api_options(
                     base_branch=args.base_branch,
                     pathspecs=args.pathspecs,
                 )
+                api_cache = GitHubApiRunCache()
                 for remote_repo in args.remote_repos:
                     repo_name = _remote_repo_label(remote_repo)
+                    repo_since = args.since
+                    if args.since_last:
+                        repo_since = since_by_checkpoint_id[remote_repository_id(repo_name)]
                     fetched = get_remote_commits(
                         remote_repo,
                         days=args.days,
                         author=args.author,
-                        since=args.since,
+                        since=repo_since,
                         until=args.until,
                         max_commits=commit_fetch_limit,
                         exclude_merges=args.exclude_merges,
                         include_prs=args.include_prs,
+                        cache=api_cache,
                     )
+                    repo_stats = api_cache.repositories.get(_normalize_repo_slug(remote_repo))
+                    if not fetched and repo_stats and repo_stats.get("rate_limited"):
+                        continue
                     fetched, metadata = _apply_output_budget(
                         fetched,
                         max_commits=args.max_commits,
@@ -2000,18 +2210,24 @@ def main(argv: list[str] | None = None) -> int:
                         commit["repository"] = repo_name
                     repo_commits.append((repo_name, fetched))
                     all_commits.extend(fetched)
+                api_metadata = api_cache.metadata()
+                if api_metadata is not None:
+                    api_run_metadata = api_metadata
             else:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     parent = Path(temp_dir)
                     for remote_repo in args.remote_repos:
                         repo_path = _clone_remote_repo(remote_repo, parent)
                         repo_name = _remote_repo_label(remote_repo)
+                        repo_since = args.since
+                        if args.since_last:
+                            repo_since = since_by_checkpoint_id[remote_repository_id(repo_name)]
                         fetched = get_commits(
                             days=args.days,
                             author=args.author,
                             base_branch=args.base_branch,
                             repo_path=str(repo_path),
-                            since=args.since,
+                            since=repo_since,
                             until=args.until,
                             max_commits=commit_fetch_limit,
                             exclude_merges=args.exclude_merges,
@@ -2038,15 +2254,23 @@ def main(argv: list[str] | None = None) -> int:
                         all_commits.extend(fetched)
             commits = all_commits
             multi_repo_commit_data = _build_multi_repo_commit_data(repo_commits)
+            metadata_parts: dict[str, Any] = {}
             if repo_budget_metadata:
-                budget_metadata = {"repositories": repo_budget_metadata}
+                metadata_parts["repositories"] = repo_budget_metadata
+            if api_run_metadata is not None:
+                metadata_parts["github_api"] = api_run_metadata
+            if metadata_parts:
+                budget_metadata = metadata_parts
         else:
+            repo_since = args.since
+            if args.since_last:
+                repo_since = since_by_checkpoint_id[checkpoint_targets[0].repository_id]
             commits = get_commits(
                 days=args.days,
                 author=args.author,
                 base_branch=args.base_branch,
                 repo_path=args.repo,
-                since=args.since,
+                since=repo_since,
                 until=args.until,
                 max_commits=commit_fetch_limit,
                 exclude_merges=args.exclude_merges,
@@ -2058,7 +2282,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not commits:
         print("No commits found in the specified time range.")
-        return 0
+        return _finish_success()
 
     if multi_repo_commit_data is None:
         commits, budget_metadata = _apply_output_budget(
@@ -2080,7 +2304,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         changelog = build_changelog_output(_with_commit_quality(commits), budget_metadata)
         _emit_markdown(changelog, args.output)
-        return 0
+        return _finish_success()
 
     commit_data = multi_repo_commit_data or _build_commit_data(commits)
 
@@ -2095,7 +2319,7 @@ def main(argv: list[str] | None = None) -> int:
             stale_days=args.stale_days,
         )
         _emit_markdown(workflow_board, args.output)
-        return 0
+        return _finish_success()
 
     if args.team_digest:
         if args.ai:
@@ -2110,7 +2334,17 @@ def main(argv: list[str] | None = None) -> int:
             stale_days=args.stale_days,
         )
         _emit_markdown(team_digest, args.output)
-        return 0
+        return _finish_success()
+
+    if args.insights:
+        if args.ai:
+            print(
+                "Warning: --ai has no effect with --insights; insights are always raw.",
+                file=sys.stderr,
+            )
+        insights = build_insights_output(_with_commit_quality_in_data(commit_data))
+        _emit_markdown(insights, args.output)
+        return _finish_success()
 
     output_format = "markdown" if args.markdown else "text"
 
@@ -2131,7 +2365,7 @@ def main(argv: list[str] | None = None) -> int:
             _emit_markdown(stats_output, args.output)
         else:
             _emit(stats_output, args.output, lambda: print(stats_output, end=""))
-        return 0
+        return _finish_success()
 
     if args.json:
         if args.ai:
@@ -2140,10 +2374,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         output = build_json_output(
-            _with_json_metadata(commit_data, budget_metadata, args.pathspecs)
+            _with_json_metadata(
+                commit_data,
+                budget_metadata,
+                _build_json_provenance_metadata(args),
+            )
         )
         _emit(output + "\n", args.output, lambda: print(output))
-        return 0
+        return _finish_success()
 
     def _emit_raw() -> None:
         """Emit the raw (non-AI) formatter output for the chosen format."""
@@ -2162,7 +2400,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.no_ai:
         _emit_raw()
-        return 0
+        return _finish_success()
 
     # AI mode
     try:
@@ -2224,7 +2462,7 @@ def main(argv: list[str] | None = None) -> int:
         _emit_markdown(output, args.output)
     else:
         _emit(output, args.output, lambda: print_ai_standup(standup_text))
-    return 0
+    return _finish_success()
 
 
 if __name__ == "__main__":
