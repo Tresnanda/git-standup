@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape as escape_rich_markup
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
@@ -50,6 +51,24 @@ _CONVENTIONAL_SUBJECT_RE = re.compile(
 
 _REPOSITORIES_KEY = "_repositories"
 TEAM_DIGEST_TEMPLATES = ("slack", "github", "jira", "linear")
+_MARKDOWN_TEXT_ESCAPE_RE = re.compile(r"([\\`*_{}\[\]<>()|])")
+
+
+def _escape_markdown_text(value: object) -> str:
+    """Escape Markdown formatting delimiters in untrusted plain text."""
+    return _MARKDOWN_TEXT_ESCAPE_RE.sub(r"\\\1", str(value))
+
+
+def _markdown_code_span(value: object) -> str:
+    """Wrap text in a Markdown code span, even when the text contains backticks."""
+    text = str(value)
+    if "`" not in text:
+        return f"`{text}`"
+    longest_run = max(len(match.group(0)) for match in re.finditer(r"`+", text))
+    fence = "`" * (longest_run + 1)
+    if text.startswith("`") or text.endswith("`"):
+        return f"{fence} {text} {fence}"
+    return f"{fence}{text}{fence}"
 
 
 def _repository_sections(
@@ -76,7 +95,7 @@ def build_markdown_output(
 
     for repo_name, repo_data in _repository_sections(commit_data):
         if repo_name is not None:
-            lines.extend([f"## {repo_name}", ""])
+            lines.extend([f"## {_escape_markdown_text(repo_name)}", ""])
             author_heading = "###"
             date_heading = "####"
         else:
@@ -84,17 +103,17 @@ def build_markdown_output(
             date_heading = "###"
 
         for author, days in repo_data.items():
-            lines.extend([f"{author_heading} {author}", ""])
+            lines.extend([f"{author_heading} {_escape_markdown_text(author)}", ""])
             for date_key, day_data in days.items():
-                lines.extend([f"{date_heading} {date_key}", ""])
+                lines.extend([f"{date_heading} {_escape_markdown_text(date_key)}", ""])
                 for commit in day_data.get("commits", []):
                     hash_short = commit.get("hash", "")[:8]
-                    subject = commit.get("subject", "")
-                    lines.append(f"- `{hash_short}` {subject}")
+                    subject = _escape_markdown_text(commit.get("subject", ""))
+                    lines.append(f"- {_markdown_code_span(hash_short)} {subject}")
                     pr_note = _format_pull_request_note(commit, markdown=True)
                     if pr_note:
                         lines.append(f"  - {pr_note}")
-                    quality_note = _format_quality_note(commit)
+                    quality_note = _format_quality_note(commit, markdown=True)
                     if quality_note:
                         lines.append(f"  - {quality_note}")
 
@@ -105,7 +124,9 @@ def build_markdown_output(
                             path = file_stat.get("path", "")
                             insertions = file_stat.get("insertions", 0)
                             deletions = file_stat.get("deletions", 0)
-                            lines.append(f"    - `{path}` (+{insertions}/-{deletions})")
+                            lines.append(
+                                f"    - {_markdown_code_span(path)} (+{insertions}/-{deletions})"
+                            )
 
                 stats = day_data.get("stats", {})
                 lines.extend(
@@ -137,7 +158,7 @@ def build_stats_output(
     for repo_name, repo_data in _repository_sections(commit_data):
         if repo_name is not None:
             if markdown:
-                lines.extend([f"## {repo_name}", ""])
+                lines.extend([f"## {_escape_markdown_text(repo_name)}", ""])
                 author_heading = "###"
             else:
                 lines.extend([f"Repository: {repo_name}", "=" * (12 + len(repo_name)), ""])
@@ -147,7 +168,7 @@ def build_stats_output(
 
         for author, days in repo_data.items():
             if markdown:
-                lines.extend([f"{author_heading} {author}", ""])
+                lines.extend([f"{author_heading} {_escape_markdown_text(author)}", ""])
             else:
                 lines.extend([author, "-" * len(author)])
 
@@ -266,7 +287,7 @@ def build_changelog_output(
             hash_short = str(commit.get("hash", ""))[:8]
             stats_text = _format_commit_change_summary(entry["files"])
             prefix = "⚠️ " if entry["breaking"] else ""
-            hash_text = f" (`{hash_short}`)" if hash_short else ""
+            hash_text = f" ({_markdown_code_span(hash_short)})" if hash_short else ""
             lines.append(f"- {prefix}{entry['description']}{hash_text} — {stats_text}")
 
             file_highlights = _format_file_highlights(entry["files"])
@@ -278,7 +299,7 @@ def build_changelog_output(
                     "  - Files omitted by `--max-files-per-commit`: "
                     f"{truncated.get('files_omitted', 0)}"
                 )
-            quality_note = _format_quality_note(commit)
+            quality_note = _format_quality_note(commit, markdown=True)
             if quality_note:
                 lines.append(f"  - {quality_note}")
             pr_note = _format_pull_request_note(commit, markdown=True)
@@ -292,7 +313,9 @@ def build_changelog_output(
         f"+{total_insertions}/-{total_deletions} lines"
     )
     if authors:
-        lines.append(f"- Authors: {', '.join(sorted(authors))}")
+        lines.append(
+            f"- Authors: {', '.join(_escape_markdown_text(author) for author in sorted(authors))}"
+        )
     top_files = _format_file_highlights(
         sorted(
             files_by_path.values(),
@@ -342,7 +365,7 @@ def build_team_digest_output(
         )
         lines.extend(
             [
-                f"## Owner: {owner}",
+                f"## Owner: {_escape_markdown_text(owner)}",
                 "",
                 summary,
                 "- Work evidence:",
@@ -351,9 +374,10 @@ def build_team_digest_output(
         for item in commits:
             commit = item["commit"]
             hash_short = _commit_hash_short(commit)
-            subject = str(commit.get("subject") or "Untitled commit")
-            repo_note = f" · {item['repo']}" if item.get("repo") else ""
-            lines.append(f"  - `{hash_short}` {subject} ({item['date']}{repo_note})")
+            subject = _escape_markdown_text(commit.get("subject") or "Untitled commit")
+            repo_note = f" · {_escape_markdown_text(item['repo'])}" if item.get("repo") else ""
+            date = _escape_markdown_text(item["date"])
+            lines.append(f"  - {_markdown_code_span(hash_short)} {subject} ({date}{repo_note})")
 
             pr_note = _format_pull_request_note(commit, markdown=True)
             if pr_note:
@@ -382,8 +406,9 @@ def build_team_digest_output(
         for risk in risks:
             commit = risk["commit"]
             lines.append(
-                f"- {risk['owner']}: `{_commit_hash_short(commit)}` "
-                f"{commit.get('subject', 'Untitled commit')} — "
+                f"- {_escape_markdown_text(risk['owner'])}: "
+                f"{_markdown_code_span(_commit_hash_short(commit))} "
+                f"{_escape_markdown_text(commit.get('subject', 'Untitled commit'))} — "
                 f"{_risk_reason_text(risk['reasons'])}"
             )
     else:
@@ -711,7 +736,8 @@ def _format_issue_notes(commit: dict[str, Any]) -> list[str]:
             label = issue_id or url
             if title:
                 label = f"{label} {title}"
-            notes.append(f"Issue: [{label}]({url})" if url else f"Issue: {label}")
+            escaped_label = _escape_markdown_text(label)
+            notes.append(f"Issue: [{escaped_label}]({url})" if url else f"Issue: {escaped_label}")
 
     text = f"{commit.get('subject', '')}\n{commit.get('body', '')}"
     existing_urls = {note.partition("(")[2].rstrip(")") for note in notes}
@@ -720,7 +746,7 @@ def _format_issue_notes(commit: dict[str, Any]) -> list[str]:
         if clean_url in existing_urls:
             continue
         if any(marker in clean_url.lower() for marker in ("/issues/", "/browse/", "linear.app")):
-            notes.append(f"Issue: [{clean_url}]({clean_url})")
+            notes.append(f"Issue: [{_escape_markdown_text(clean_url)}]({clean_url})")
     return notes
 
 
@@ -751,9 +777,9 @@ def _team_digest_pr_question(owner: str, commit: dict[str, Any]) -> str:
     if not isinstance(pull_request, dict) or pull_request.get("number") is None:
         return ""
     title = str(pull_request.get("title") or "").strip()
-    title_text = f" ({title})" if title else ""
+    title_text = f" ({_escape_markdown_text(title)})" if title else ""
     return (
-        f"{owner}: Is PR #{pull_request['number']}{title_text} "
+        f"{_escape_markdown_text(owner)}: Is PR #{pull_request['number']}{title_text} "
         "ready for review, merge, or follow-up?"
     )
 
@@ -761,7 +787,10 @@ def _team_digest_pr_question(owner: str, commit: dict[str, Any]) -> str:
 def _team_digest_issue_question(owner: str, issue_note: str) -> str:
     match = re.search(r"\[([^\]]+)\]", issue_note)
     issue_label = match.group(1).split()[0] if match else issue_note.replace("Issue: ", "")
-    return f"{owner}: Does {issue_label} need status, owner, or acceptance follow-up?"
+    return (
+        f"{_escape_markdown_text(owner)}: Does {issue_label} "
+        "need status, owner, or acceptance follow-up?"
+    )
 
 
 def _team_digest_risk_question(
@@ -771,12 +800,24 @@ def _team_digest_risk_question(
 ) -> str:
     hash_short = _commit_hash_short(commit)
     if any(reason == "keyword: wip" for reason in reasons):
-        return f"{owner}: Is `{hash_short}` still in progress or blocking handoff?"
+        return (
+            f"{_escape_markdown_text(owner)}: Is {_markdown_code_span(hash_short)} "
+            "still in progress or blocking handoff?"
+        )
     if any(reason == "keyword: revert" for reason in reasons):
-        return f"{owner}: Does `{hash_short}` need rollback context or follow-up remediation?"
+        return (
+            f"{_escape_markdown_text(owner)}: Does {_markdown_code_span(hash_short)} "
+            "need rollback context or follow-up remediation?"
+        )
     if any(reason == "keyword: fix" for reason in reasons):
-        return f"{owner}: What validation confirms `{hash_short}` fixed the issue?"
-    return f"{owner}: Can `{hash_short}` be clarified for reviewer or handoff context?"
+        return (
+            f"{_escape_markdown_text(owner)}: What validation confirms "
+            f"{_markdown_code_span(hash_short)} fixed the issue?"
+        )
+    return (
+        f"{_escape_markdown_text(owner)}: Can {_markdown_code_span(hash_short)} "
+        "be clarified for reviewer or handoff context?"
+    )
 
 
 def _dedupe_preserving_order(values: list[str]) -> list[str]:
@@ -796,14 +837,14 @@ def _changelog_commit_summary(commit: dict[str, Any]) -> tuple[str, str, bool]:
     match = _CONVENTIONAL_SUBJECT_RE.match(subject)
     body_breaking = "BREAKING CHANGE:" in body or "BREAKING-CHANGE:" in body
     if not match:
-        return "Other", subject, body_breaking
+        return "Other", _escape_markdown_text(subject), body_breaking
 
     commit_type = match.group("type").lower()
     category = _CHANGELOG_TYPE_MAP.get(commit_type, "Other")
     scope = match.group("scope")
-    description = match.group("description").strip()
+    description = _escape_markdown_text(match.group("description").strip())
     if scope:
-        description = f"**{scope}:** {description}"
+        description = f"**{_escape_markdown_text(scope)}:** {description}"
     breaking = bool(match.group("breaking")) or body_breaking
     return category, description, breaking
 
@@ -820,13 +861,16 @@ def _sorted_commit_files(commit: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
-def _format_quality_note(commit: dict[str, Any]) -> str:
+def _format_quality_note(commit: dict[str, Any], *, markdown: bool = False) -> str:
     quality = commit.get("quality")
     if not isinstance(quality, dict) or quality.get("signal") != "low":
         return ""
     reasons = quality.get("reasons", [])
     if isinstance(reasons, list) and reasons:
-        reason_text = "; ".join(str(reason) for reason in reasons)
+        if markdown:
+            reason_text = "; ".join(_escape_markdown_text(reason) for reason in reasons)
+        else:
+            reason_text = "; ".join(str(reason) for reason in reasons)
         return f"⚠️ Low-signal commit message: {reason_text}."
     return "⚠️ Low-signal commit message."
 
@@ -842,7 +886,7 @@ def _format_pull_request_note(commit: dict[str, Any], *, markdown: bool) -> str:
     url = str(pull_request.get("url") or "").strip()
     label = f"#{number}"
     if title:
-        label = f"{label} {title}"
+        label = f"{label} {_escape_markdown_text(title) if markdown else title}"
     if url:
         if markdown:
             return f"PR: [{label}]({url})"
@@ -867,7 +911,7 @@ def _format_file_highlights(files: list[dict[str, Any]], limit: int = 3) -> str:
         path = str(file_stat.get("path") or "unknown")
         insertions = int(file_stat.get("insertions", 0) or 0)
         deletions = int(file_stat.get("deletions", 0) or 0)
-        highlights.append(f"`{path}` (+{insertions}/-{deletions})")
+        highlights.append(f"{_markdown_code_span(path)} (+{insertions}/-{deletions})")
     remaining = len(files) - limit
     if remaining > 0:
         highlights.append(f"+{remaining} more")
@@ -980,7 +1024,7 @@ def print_text_standup(
     console.print()
 
     for author, days in commit_data.items():
-        console.print(f"[bold yellow]👤 {author}[/bold yellow]")
+        console.print(f"[bold yellow]👤 {escape_rich_markup(str(author))}[/bold yellow]")
         console.print("[dim]─[/dim]" * 50)
 
         author_insertions = 0
@@ -995,12 +1039,12 @@ def print_text_standup(
             except (ValueError, TypeError):
                 date_display = date_key
 
-            console.print(f"  [bold green]📅 {date_display}[/bold green]")
+            console.print(f"  [bold green]📅 {escape_rich_markup(str(date_display))}[/bold green]")
 
             for c in day_data.get("commits", []):
                 author_commits += 1
-                hash_short = c.get("hash", "")[:8]
-                subject = c.get("subject", "")
+                hash_short = escape_rich_markup(str(c.get("hash", ""))[:8])
+                subject = escape_rich_markup(str(c.get("subject", "")))
 
                 ins = sum(f.get("insertions", 0) for f in c.get("files", []))
                 dels = sum(f.get("deletions", 0) for f in c.get("files", []))
@@ -1013,14 +1057,15 @@ def print_text_standup(
                 )
                 pr_note = _format_pull_request_note(c, markdown=False)
                 if pr_note:
-                    console.print(f"      [cyan]{pr_note}[/cyan]")
+                    console.print(f"      [cyan]{escape_rich_markup(pr_note)}[/cyan]")
                 quality_note = _format_quality_note(c)
                 if quality_note:
-                    console.print(f"      [yellow]{quality_note}[/yellow]")
+                    console.print(f"      [yellow]{escape_rich_markup(quality_note)}[/yellow]")
 
                 # Show file changes
                 for f in c.get("files", []):
                     path = f.get("path", "")
+                    path_text = escape_rich_markup(str(path))
                     fi = f.get("insertions", 0)
                     fd = f.get("deletions", 0)
                     all_files.add(path)
@@ -1031,9 +1076,9 @@ def print_text_standup(
                         stats_parts.append(f"[red]-{fd}[/red]")
                     stats_str = " ".join(stats_parts)
                     if stats_str:
-                        console.print(f"      [dim]├[/dim] {path} ({stats_str})")
+                        console.print(f"      [dim]├[/dim] {path_text} ({stats_str})")
                     else:
-                        console.print(f"      [dim]├[/dim] {path}")
+                        console.print(f"      [dim]├[/dim] {path_text}")
 
                 # Show commit body if present (short)
                 body = c.get("body", "")
@@ -1041,7 +1086,9 @@ def print_text_standup(
                     # Show first line of body
                     first_line = body.strip().split("\n")[0][:120]
                     if first_line:
-                        console.print(f"      [dim]└[/dim] [italic]{first_line}[/italic]")
+                        console.print(
+                            f"      [dim]└[/dim] [italic]{escape_rich_markup(first_line)}[/italic]"
+                        )
 
             console.print()
 
@@ -1093,5 +1140,5 @@ def print_ai_standup(text: str) -> None:
         )
     )
     console.print()
-    console.print(text)
+    console.print(escape_rich_markup(text))
     console.print()
