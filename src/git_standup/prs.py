@@ -21,7 +21,9 @@ def enrich_commits_with_prs(
     commits: list[dict[str, Any]],
     *,
     repo_path: str | None = None,
+    repo_slug: str | None = None,
     query_github: bool = False,
+    include_status: bool = False,
 ) -> list[dict[str, Any]]:
     """Return commits annotated with best-effort pull request metadata.
 
@@ -29,8 +31,13 @@ def enrich_commits_with_prs(
     GitHub CLI may be used to fill missing PR title/URL data or to find a PR by
     commit SHA. Callers should only pass ``query_github=True`` for an explicit
     user opt-in because it may perform network/API requests.
+
+    When ``include_status`` is also true, ``gh pr view`` is asked for workflow
+    status fields (draft state, checks, reviews, mergeability, labels, linked
+    issues, and ownership). Failed or unavailable GitHub lookups are ignored so
+    local summaries remain safe and deterministic.
     """
-    repo_slug = _github_repo_slug(repo_path)
+    repo_slug = repo_slug or _github_repo_slug(repo_path)
     gh = shutil.which("gh") if query_github else None
     annotated: list[dict[str, Any]] = []
 
@@ -43,6 +50,7 @@ def enrich_commits_with_prs(
                 repo_slug,
                 item,
                 existing=pr_info,
+                include_status=include_status,
             ) or pr_info
         if pr_info:
             item["pull_request"] = pr_info
@@ -123,12 +131,25 @@ def _github_pull_request_info(
     commit: dict[str, Any],
     *,
     existing: dict[str, Any] | None,
+    include_status: bool,
 ) -> dict[str, Any] | None:
     if existing and existing.get("number"):
-        fetched = _gh_pr_view(gh, repo_slug, int(existing["number"]))
+        fetched = _gh_pr_view(
+            gh,
+            repo_slug,
+            int(existing["number"]),
+            include_status=include_status,
+        )
     else:
         commit_hash = str(commit.get("hash") or "").strip()
         fetched = _gh_pr_for_commit(gh, repo_slug, commit_hash) if commit_hash else None
+        if fetched and include_status:
+            fetched = _gh_pr_view(
+                gh,
+                repo_slug,
+                int(fetched["number"]),
+                include_status=True,
+            ) or fetched
 
     if not fetched:
         return existing
@@ -136,14 +157,54 @@ def _github_pull_request_info(
         return {**fetched, "source": "github-cli"}
 
     merged = dict(existing)
-    for key in ("title", "url"):
-        if fetched.get(key):
+    for key in (
+        "title",
+        "url",
+        "state",
+        "draft",
+        "merge_state_status",
+        "review_decision",
+        "labels",
+        "linked_issues",
+        "checks",
+        "updated_at",
+        "author",
+        "assignees",
+        "review_requests",
+    ):
+        if fetched.get(key) is not None:
             merged[key] = fetched[key]
     merged["source"] = "github-cli"
     return merged
 
 
-def _gh_pr_view(gh: str, repo_slug: str, number: int) -> dict[str, Any] | None:
+def _gh_pr_view(
+    gh: str,
+    repo_slug: str,
+    number: int,
+    *,
+    include_status: bool = False,
+) -> dict[str, Any] | None:
+    fields = "number,title,url"
+    if include_status:
+        fields = ",".join(
+            [
+                "number",
+                "title",
+                "url",
+                "state",
+                "isDraft",
+                "mergeStateStatus",
+                "reviewDecision",
+                "labels",
+                "closingIssuesReferences",
+                "statusCheckRollup",
+                "updatedAt",
+                "author",
+                "assignees",
+                "reviewRequests",
+            ]
+        )
     result = _run_gh(
         [
             gh,
@@ -153,7 +214,7 @@ def _gh_pr_view(gh: str, repo_slug: str, number: int) -> dict[str, Any] | None:
             "--repo",
             repo_slug,
             "--json",
-            "number,title,url",
+            fields,
         ]
     )
     if not isinstance(result, dict):
@@ -211,12 +272,122 @@ def _pr_info_from_gh(data: dict[str, Any]) -> dict[str, Any] | None:
         number = int(data["number"])
     except (KeyError, TypeError, ValueError):
         return None
-    return _pr_info(
+    info = _pr_info(
         number=number,
         title=str(data.get("title") or ""),
         url=str(data.get("url") or ""),
         source="github-cli",
     )
+    _add_status_fields(info, data)
+    return info
+
+
+def _add_status_fields(info: dict[str, Any], data: dict[str, Any]) -> None:
+    """Attach best-effort GitHub PR status fields from ``gh pr view`` JSON."""
+    if data.get("state"):
+        info["state"] = str(data["state"]).lower()
+    if "isDraft" in data:
+        info["draft"] = bool(data.get("isDraft"))
+    if data.get("mergeStateStatus"):
+        info["merge_state_status"] = str(data["mergeStateStatus"]).lower()
+    if data.get("reviewDecision"):
+        info["review_decision"] = str(data["reviewDecision"]).lower()
+    labels = _names_from_items(data.get("labels"))
+    if labels:
+        info["labels"] = labels
+    linked_issues = _issues_from_items(data.get("closingIssuesReferences"))
+    if linked_issues:
+        info["linked_issues"] = linked_issues
+    checks = _checks_from_rollup(data.get("statusCheckRollup"))
+    if checks:
+        info["checks"] = checks
+    if data.get("updatedAt"):
+        info["updated_at"] = str(data["updatedAt"])
+    author = data.get("author")
+    if isinstance(author, dict) and author.get("login"):
+        info["author"] = str(author["login"])
+    assignees = _names_from_items(data.get("assignees"))
+    if assignees:
+        info["assignees"] = assignees
+    review_requests = _names_from_items(data.get("reviewRequests"))
+    if review_requests:
+        info["review_requests"] = review_requests
+
+
+def _names_from_items(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("login")
+        if name:
+            names.append(str(name))
+    return names
+
+
+def _issues_from_items(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    issues: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        issue: dict[str, Any] = {}
+        if item.get("number") is not None:
+            issue["number"] = item["number"]
+        if item.get("title"):
+            issue["title"] = str(item["title"])
+        if item.get("url"):
+            issue["url"] = str(item["url"])
+        if issue:
+            issues.append(issue)
+    return issues
+
+
+def _checks_from_rollup(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, list):
+        return None
+    total = len(value)
+    if total == 0:
+        return {"state": "none", "total": 0, "passed": 0, "failed": 0, "pending": 0}
+    passed = 0
+    failed = 0
+    pending = 0
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("name"):
+            names.append(str(item["name"]))
+        conclusion = str(item.get("conclusion") or "").upper()
+        status = str(item.get("status") or "").upper()
+        if conclusion in {"SUCCESS", "NEUTRAL", "SKIPPED"}:
+            passed += 1
+        elif conclusion in {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}:
+            failed += 1
+        elif status and status != "COMPLETED":
+            pending += 1
+    pending += max(total - passed - failed - pending, 0)
+    if failed:
+        state = "failed"
+    elif pending:
+        state = "pending"
+    elif passed == total:
+        state = "passed"
+    else:
+        state = "unknown"
+    checks: dict[str, Any] = {
+        "state": state,
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "pending": pending,
+    }
+    if names:
+        checks["names"] = names[:5]
+    return checks
 
 
 def _pr_info(*, number: int, title: str, url: str, source: str) -> dict[str, Any]:
