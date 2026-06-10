@@ -57,7 +57,12 @@ from git_standup.formatter import (
     print_ai_standup,
     print_text_standup,
 )
-from git_standup.github_api import get_remote_commits, validate_remote_api_options
+from git_standup.github_api import (
+    GitHubApiRunCache,
+    _normalize_repo_slug,
+    get_remote_commits,
+    validate_remote_api_options,
+)
 from git_standup.gitlog import (
     compute_stats,
     describe_commit_quality,
@@ -120,6 +125,8 @@ def _build_commit_data(
                     item["truncated"] = c["truncated"]
                 if c.get("pull_request"):
                     item["pull_request"] = c["pull_request"]
+                if c.get("github_api"):
+                    item["github_api"] = c["github_api"]
                 if c.get("issues"):
                     item["issues"] = c["issues"]
                 quality = c.get("quality") or describe_commit_quality(c)
@@ -2115,12 +2122,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.remote_repos:
             repo_commits: list[tuple[str, list[dict[str, Any]]]] = []
             repo_budget_metadata: dict[str, Any] = {}
+            api_run_metadata: dict[str, Any] | None = None
             all_commits: list[dict[str, Any]] = []
             if args.remote_backend == "api":
                 validate_remote_api_options(
                     base_branch=args.base_branch,
                     pathspecs=args.pathspecs,
                 )
+                api_cache = GitHubApiRunCache()
                 for remote_repo in args.remote_repos:
                     repo_name = _remote_repo_label(remote_repo)
                     repo_since = args.since
@@ -2135,7 +2144,11 @@ def main(argv: list[str] | None = None) -> int:
                         max_commits=commit_fetch_limit,
                         exclude_merges=args.exclude_merges,
                         include_prs=args.include_prs,
+                        cache=api_cache,
                     )
+                    repo_stats = api_cache.repositories.get(_normalize_repo_slug(remote_repo))
+                    if not fetched and repo_stats and repo_stats.get("rate_limited"):
+                        continue
                     fetched, metadata = _apply_output_budget(
                         fetched,
                         max_commits=args.max_commits,
@@ -2147,6 +2160,9 @@ def main(argv: list[str] | None = None) -> int:
                         commit["repository"] = repo_name
                     repo_commits.append((repo_name, fetched))
                     all_commits.extend(fetched)
+                api_metadata = api_cache.metadata()
+                if api_metadata is not None:
+                    api_run_metadata = api_metadata
             else:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     parent = Path(temp_dir)
@@ -2186,8 +2202,13 @@ def main(argv: list[str] | None = None) -> int:
                         all_commits.extend(fetched)
             commits = all_commits
             multi_repo_commit_data = _build_multi_repo_commit_data(repo_commits)
+            metadata_parts: dict[str, Any] = {}
             if repo_budget_metadata:
-                budget_metadata = {"repositories": repo_budget_metadata}
+                metadata_parts["repositories"] = repo_budget_metadata
+            if api_run_metadata is not None:
+                metadata_parts["github_api"] = api_run_metadata
+            if metadata_parts:
+                budget_metadata = metadata_parts
         else:
             repo_since = args.since
             if args.since_last:
