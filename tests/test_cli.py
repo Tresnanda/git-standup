@@ -2091,7 +2091,7 @@ def test_multi_select_uses_arrow_keys_and_space_to_select(
     assert selected == ["Kevin", "YusufRehan"]
     out = capsys.readouterr().out
     assert "Choose authors" in out
-    assert "Space selects" in out
+    assert "space select" in out
 
 
 def test_multi_select_pages_long_option_lists(
@@ -2130,7 +2130,7 @@ def test_multi_select_scrolls_viewport_with_cursor(
     )
 
     out = capsys.readouterr().out
-    assert "> [ ] Tresnanda/repo-7" in out
+    assert "\x1b[36m❯\x1b[0m [ ] Tresnanda/repo-7" in out
     assert "Showing 4-9 of 20. Selected: 0." in out
 
 
@@ -2152,8 +2152,8 @@ def test_tabbed_multi_select_uses_horizontal_arrows(
     assert selected == ["org/web"]
     out = capsys.readouterr().out
     assert "Tabs: Owned | [Organizations] | Collaborator" in out
-    assert "Use Left/Right to switch tabs" in out
-    assert "> [ ] org/web" in out
+    assert "←/→ tabs · ↑/↓ move · space select · ⏎ confirm · a all · q quit" in out
+    assert "\x1b[36m❯\x1b[0m [ ] org/web" in out
 
 
 def test_interactive_choice_uses_arrow_keys_to_select(
@@ -2173,8 +2173,8 @@ def test_interactive_choice_uses_arrow_keys_to_select(
 
     assert selected == "text"
     out = capsys.readouterr().out
-    assert "Output format:" in out
-    assert "Use Up/Down to move" in out
+    assert "\x1b[1mOutput format\x1b[0m" in out
+    assert "↑/↓ move · ⏎ select · q quit" in out
     assert "\x1b[4F\x1b[J" in out
 
 
@@ -2412,7 +2412,7 @@ def test_interactive_choice_collapses_to_summary_on_confirm(
     )
 
     out = capsys.readouterr().out
-    assert "Output format: \x1b[32m✓\x1b[0m Plain text" in out
+    assert "\x1b[32m✓\x1b[0m Output format · Plain text" in out
 
 
 def test_multi_select_collapses_to_summary_on_confirm(
@@ -2427,7 +2427,7 @@ def test_multi_select_collapses_to_summary_on_confirm(
     )
 
     out = capsys.readouterr().out
-    assert "Choose authors: \x1b[32m✓\x1b[0m Kevin, YusufRehan" in out
+    assert "\x1b[32m✓\x1b[0m Choose authors · Kevin, YusufRehan" in out
 
 
 def test_multi_select_empty_selection_summary_says_none(
@@ -2439,7 +2439,7 @@ def test_multi_select_empty_selection_summary_says_none(
         key_reader=lambda: "\r",
     )
 
-    assert "Choose authors: \x1b[32m✓\x1b[0m none" in capsys.readouterr().out
+    assert "\x1b[32m✓\x1b[0m Choose authors · none" in capsys.readouterr().out
 
 
 def test_multi_select_add_row_prompts_and_appends_custom_entry() -> None:

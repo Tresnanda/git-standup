@@ -866,6 +866,11 @@ def _suspended_raw_terminal():
         tty.setcbreak(fd)
 
 
+def _style(text: str, code: str) -> str:
+    """Wrap text in an ANSI SGR code, resetting afterward."""
+    return f"\x1b[{code}m{text}\x1b[0m"
+
+
 def _move_cursor_up(lines: int) -> None:
     if lines > 0:
         print(f"\x1b[{lines}F\x1b[J", end="")
@@ -895,7 +900,7 @@ def _spinner(message: str):
 def _collapse_summary(title: str, summary: str, rendered_lines: int) -> None:
     """Erase a finished picker frame and leave a one-line summary behind."""
     _move_cursor_up(rendered_lines)
-    print(f"{title}: \x1b[32m✓\x1b[0m {summary}")
+    print(f"{_style('✓', '32')} {title} · {summary}")
 
 
 def _picker_window(cursor: int, option_count: int) -> tuple[int, int, bool]:
@@ -930,16 +935,20 @@ def _interactive_choice(
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
         start, end, paged = _picker_window(cursor, len(options))
-        print(f"{title}:")
-        print("Use Up/Down to move, Enter to choose, q to cancel.")
+        print(_style(title, "1"))
+        print(_style("↑/↓ move · ⏎ select · q quit", "2"))
         for index in range(start, end):
             _value, label, description = options[index]
-            pointer = ">" if index == cursor else " "
-            suffix = f" - {description}" if description else ""
-            print(f"{pointer} {label}{suffix}")
+            if index == cursor:
+                row = f"{_style('❯', '36')} {_style(label, '1;36')}"
+            else:
+                row = f"  {label}"
+            if description:
+                row += f"  {_style('· ' + description, '2')}"
+            print(row)
         footer_lines = 0
         if paged:
-            print(f"Showing {start + 1}-{end} of {len(options)}.")
+            print(_style(f"Showing {start + 1}-{end} of {len(options)}.", "2"))
             footer_lines = 1
         rendered_lines = (end - start) + 2 + footer_lines
 
@@ -1006,10 +1015,10 @@ def _interactive_multi_select(
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
         start, end, paged = _picker_window(cursor, len(display))
-        print(f"{title}:")
-        print("Use Up/Down to move, Space selects, Enter confirms, a selects all, q cancels.")
+        print(_style(title, "1"))
+        print(_style("↑/↓ move · space select · ⏎ confirm · a all · q quit", "2"))
         for index in range(start, end):
-            pointer = ">" if index == cursor else " "
+            pointer = _style("❯", "36") if index == cursor else " "
             if index == add_index:
                 print(f"{pointer} {display[index]}")
             else:
@@ -1017,7 +1026,13 @@ def _interactive_multi_select(
                 print(f"{pointer} {mark} {display[index]}")
         footer_lines = 0
         if paged:
-            print(f"Showing {start + 1}-{end} of {len(display)}. Selected: {len(selected)}.")
+            print(
+                _style(
+                    f"Showing {start + 1}-{end} of {len(display)}. "
+                    f"Selected: {len(selected)}.",
+                    "2",
+                )
+            )
             footer_lines = 1
         rendered_lines = (end - start) + 2 + footer_lines
 
@@ -1088,24 +1103,32 @@ def _interactive_tabbed_multi_select(
         tab_name, options = current_tab()
         cursor = cursor_by_tab[tab_name]
         start, end, paged = _picker_window(cursor, len(options))
-        print(f"{title}:")
+        print(_style(title, "1"))
         rendered_tabs = " | ".join(
             f"[{name}]" if index == tab_index else name
             for index, (name, _values) in enumerate(tabs)
         )
         print(f"Tabs: {rendered_tabs}")
         print(
-            "Use Left/Right to switch tabs, Up/Down to move, "
-            "Space selects, Enter confirms, a selects all, q cancels."
+            _style(
+                "←/→ tabs · ↑/↓ move · space select · ⏎ confirm · a all · q quit",
+                "2",
+            )
         )
         for index in range(start, end):
             repo = options[index]
-            pointer = ">" if index == cursor else " "
+            pointer = _style("❯", "36") if index == cursor else " "
             mark = "[x]" if repo in selected else "[ ]"
             print(f"{pointer} {mark} {repo}")
         footer_lines = 0
         if paged:
-            print(f"Showing {start + 1}-{end} of {len(options)}. Selected: {len(selected)}.")
+            print(
+                _style(
+                    f"Showing {start + 1}-{end} of {len(options)}. "
+                    f"Selected: {len(selected)}.",
+                    "2",
+                )
+            )
             footer_lines = 1
         rendered_lines = (end - start) + 3 + footer_lines
 
