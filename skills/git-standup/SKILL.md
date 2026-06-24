@@ -39,6 +39,14 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/Tresnanda/git-standup/main/install.ps1 | iex
 ```
 
+When setup is unclear, run:
+
+```bash
+git-standup doctor
+```
+
+It is read-only, prints Git/Python/AI diagnostics, and masks credentials.
+
 ## Choosing The Right Report
 
 Use these commands as defaults:

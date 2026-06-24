@@ -17,6 +17,7 @@ Run:
 ```bash
 ruff check .
 pytest
+python -m pip_audit
 python -m build
 python -m twine check dist/*
 ```

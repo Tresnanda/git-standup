@@ -1437,9 +1437,9 @@ def _provider_key_env(provider: str) -> str:
     return "OPENAI_API_KEY"
 
 
-def _prompt_api_key(provider: str) -> None:
+def _prompt_api_key(provider: str, key_name: str | None = None) -> None:
     """Prompt for an API key, set it for this run, and offer to persist it."""
-    key_name = _provider_key_env(provider)
+    key_name = key_name or _provider_key_env(provider)
     key = getpass.getpass(f"{key_name} (hidden; leave blank to skip): ").strip()
     if not key:
         print(f"Skipped key entry. Set {key_name} in your environment to use AI mode.")
@@ -1584,7 +1584,7 @@ def configure_ai_interactive(
             author_aliases=existing_author_aliases,
         )
         if allow_key:
-            _prompt_api_key(chosen)
+            _prompt_api_key(chosen, api_key_env or None)
 
     written = save_config(path, config)
     print(f"Saved AI defaults to {written}")
@@ -1655,6 +1655,127 @@ def run_config_command(args: argparse.Namespace) -> int:
 
     print(f"Unknown config action: {action}", file=sys.stderr)
     return 2
+
+
+def run_doctor_command(args: argparse.Namespace) -> int:
+    """Print a read-only environment report for troubleshooting setup."""
+    path = config_path()
+    try:
+        config = load_config(path)
+    except ValueError as exc:
+        print(f"Error: invalid config: {exc}", file=sys.stderr)
+        return 1
+
+    git_path = shutil.which("git")
+    gh_path = shutil.which("gh")
+    repo_root = ""
+    repo_error = ""
+    if git_path:
+        try:
+            repo_root = get_repo_root(args.repo)
+        except RuntimeError as exc:
+            repo_error = str(exc)
+
+    ai_report = detect_ai_environment(os.environ, shutil.which, config)
+    version_text = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    python_ok = tuple(sys.version_info[:2]) >= MIN_PYTHON
+
+    print("git-standup")
+    print(f"- version: {__version__}")
+    print(f"- config path: {path}")
+    print("")
+
+    print("Python")
+    print(f"- version: {version_text}")
+    minimum_version = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
+    print(f"- supported: {'yes' if python_ok else 'no'} (requires >= {minimum_version})")
+    print("")
+
+    print("Git")
+    print(f"- git on PATH: {'yes' if git_path else 'no'}")
+    if repo_root:
+        print(f"- repository: {repo_root}")
+    elif repo_error:
+        print(f"- repository: not ready ({repo_error})")
+    else:
+        print("- repository: not checked")
+    print("")
+
+    print("GitHub CLI")
+    print(f"- gh on PATH: {'yes' if gh_path else 'no'}")
+    print("")
+
+    print("AI")
+    api_keys = ai_report.get("api_keys") if isinstance(ai_report.get("api_keys"), list) else []
+    if api_keys:
+        print("- detected keys:")
+        for item in api_keys:
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider") or item.get("name") or "unknown")
+            key_name = str(item.get("name") or provider)
+            masked = str(item.get("masked") or "(masked unavailable)")
+            print(f"  - {provider}: {key_name}={masked}")
+    else:
+        print("- detected keys: none")
+
+    harnesses_raw = ai_report.get("cli_harnesses")
+    harnesses = harnesses_raw if isinstance(harnesses_raw, list) else []
+    print(
+        "- supported harnesses: "
+        + (", ".join(str(item) for item in harnesses) if harnesses else "none")
+    )
+
+    unsupported_keys = (
+        ai_report.get("unsupported_api_keys")
+        if isinstance(ai_report.get("unsupported_api_keys"), list)
+        else []
+    )
+    if unsupported_keys:
+        print("- unsupported credentials:")
+        for item in unsupported_keys:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "unknown")
+            reason = str(item.get("reason") or "unsupported")
+            print(f"  - {name}: {reason}")
+
+    unsupported_tools = (
+        ai_report.get("unsupported_cli_tools")
+        if isinstance(ai_report.get("unsupported_cli_tools"), list)
+        else []
+    )
+    if unsupported_tools:
+        print("- unsupported CLI tools: " + ", ".join(str(item) for item in unsupported_tools))
+
+    if config is None:
+        print("- saved config: none")
+    else:
+        saved_parts: list[str] = []
+        if config.provider:
+            saved_parts.append(f"provider={config.provider}")
+        if config.harness:
+            saved_parts.append(f"harness={config.harness}")
+        if config.model:
+            saved_parts.append(f"model={config.model}")
+        if config.api_key_env:
+            saved_parts.append(f"api_key_env={config.api_key_env}")
+        print("- saved config: " + (", ".join(saved_parts) if saved_parts else "present but empty"))
+    print("")
+
+    print("Next steps")
+    next_steps: list[str] = []
+    if not git_path:
+        next_steps.append("Install Git so git-standup can read repository history.")
+    elif not repo_root:
+        next_steps.append("Run inside a Git repository or pass --repo /path/to/repo.")
+    if not api_keys and not harnesses and not (config and (config.provider or config.harness)):
+        next_steps.append("Run `git-standup config` to set an AI provider or harness.")
+    if not next_steps:
+        next_steps.append("Environment looks ready.")
+    for step in next_steps:
+        print(f"- {step}")
+    return 0
 
 
 def run_wizard() -> int:
@@ -1842,6 +1963,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "  git-standup wizard              # Build the right command interactively\n"
         "  git-standup config              # Choose saved AI defaults\n"
         "  git-standup config show         # Show saved AI defaults\n"
+        "  git-standup doctor              # Inspect local setup without changing anything\n"
         "  git-standup update              # Update git-standup from GitHub\n"
         "  git-standup                     # Last 7 days, all contributors\n"
         "  git-standup me                  # My commits, no AI required\n"
@@ -1878,7 +2000,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "tokens",
         nargs="*",
         help=(
-            "Optional command, preset (wizard, config, update, me, week, branch), "
+            "Optional command, preset (wizard, config, doctor, update, me, week, branch), "
             "or repository path"
         ),
     )
@@ -2152,6 +2274,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             args.config_action = tokens.pop(0) if tokens else "interactive"
             if tokens:
                 parser.error("config accepts at most one action")
+        elif target == "doctor":
+            args.command = "doctor"
+            if tokens:
+                parser.error("doctor does not accept extra arguments")
         elif target == "me":
             args.author = "me"
             args.no_ai = True
@@ -2237,8 +2363,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "config":
         return run_config_command(args)
 
+    if args.command == "doctor":
+        return run_doctor_command(args)
+
     checkpoint_targets: list[_CheckpointTarget] = []
-    checkpoint_timestamp = _checkpoint_timestamp() if args.write_checkpoint else ""
+    checkpoint_timestamp = ""
+    checkpoint_until = args.until
+    if args.write_checkpoint:
+        checkpoint_timestamp = args.until or _checkpoint_timestamp()
+        checkpoint_until = checkpoint_timestamp
     since_by_checkpoint_id: dict[str, str] = {}
     try:
         if args.since_last or args.write_checkpoint:
@@ -2298,7 +2431,7 @@ def main(argv: list[str] | None = None) -> int:
                         days=args.days,
                         author=args.author,
                         since=repo_since,
-                        until=args.until,
+                        until=checkpoint_until,
                         max_commits=commit_fetch_limit,
                         exclude_merges=args.exclude_merges,
                         all_branches=args.all_branches,
@@ -2346,7 +2479,7 @@ def main(argv: list[str] | None = None) -> int:
                             base_branch=args.base_branch,
                             repo_path=str(repo_path),
                             since=repo_since,
-                            until=args.until,
+                            until=checkpoint_until,
                             max_commits=commit_fetch_limit,
                             exclude_merges=args.exclude_merges,
                             all_branches=args.all_branches,
@@ -2393,7 +2526,7 @@ def main(argv: list[str] | None = None) -> int:
                 base_branch=args.base_branch,
                 repo_path=args.repo,
                 since=repo_since,
-                until=args.until,
+                until=checkpoint_until,
                 max_commits=commit_fetch_limit,
                 exclude_merges=args.exclude_merges,
                 all_branches=args.all_branches,
@@ -2485,7 +2618,11 @@ def main(argv: list[str] | None = None) -> int:
                 "use --markdown for Markdown stats.",
                 file=sys.stderr,
             )
-        stats_output = build_stats_output(commit_data, output_format=output_format)
+        stats_output = build_stats_output(
+            commit_data,
+            output_format=output_format,
+            budget_metadata=budget_metadata,
+        )
         if output_format == "markdown":
             _emit_markdown(stats_output, args.output)
         else:
@@ -2511,15 +2648,15 @@ def main(argv: list[str] | None = None) -> int:
     def _emit_raw() -> None:
         """Emit the raw (non-AI) formatter output for the chosen format."""
         if output_format == "markdown":
-            markdown = build_markdown_output(commit_data)
+            markdown = build_markdown_output(commit_data, budget_metadata=budget_metadata)
             _emit_markdown(markdown, args.output)
         else:
-            text_output = build_text_output(commit_data)
+            text_output = build_text_output(commit_data, budget_metadata=budget_metadata)
             _emit(
                 text_output,
                 args.output,
                 lambda: print(text_output, end="")
-                if multi_repo_commit_data is not None
+                if multi_repo_commit_data is not None or budget_metadata
                 else print_text_standup(commit_data),
             )
 

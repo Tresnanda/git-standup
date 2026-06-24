@@ -6,6 +6,7 @@
 
 - [ ] `ruff check .`
 - [ ] `pytest`
+- [ ] `python -m pip_audit`
 - [ ] `python -m build`
 
 ## Checklist

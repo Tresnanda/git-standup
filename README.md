@@ -149,6 +149,14 @@ Update to the latest GitHub version at any time:
 git-standup update
 ```
 
+Diagnose local setup without changing config or making API calls:
+
+```bash
+git-standup doctor
+```
+
+`doctor` is read-only and masks detected credentials in its output.
+
 ## Agent Skill
 
 `git-standup` includes an optional agent skill for Codex and other agents that
@@ -268,9 +276,11 @@ git-standup --since-last --write-checkpoint --no-ai
 
 `--since-last` is opt-in and starts the report from the repository's saved
 checkpoint instead of a date you type by hand. `--write-checkpoint` stores the
-current timestamp after a successful report, so the next run can pick up from
-there. Use `--write-checkpoint` on an initial normal report to seed the file, or
-combine both flags for a recurring daily/standup workflow. Checkpoints are
+end of the successful fetched window after a report, so the next run can pick up
+from there. Without `--until`, that is the timestamp captured before fetching;
+with `--until`, it is the exact value you supplied. Use `--write-checkpoint` on
+an initial normal report to seed the file.
+Combine both flags for a recurring daily/standup workflow. Checkpoints are
 stored as non-secret user data at `$XDG_DATA_HOME/git-standup/checkpoints.json`
 or `~/.local/share/git-standup/checkpoints.json` on macOS/Linux, and under
 `%LOCALAPPDATA%\git-standup\checkpoints.json` on Windows. Local repositories are
@@ -535,6 +545,8 @@ pip install -e ".[dev]"
 pytest
 ruff check .
 ```
+
+Saved report profiles are planned; see [docs/report-profiles.md](docs/report-profiles.md).
 
 ## License
 

@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 from rich.console import Console
 from rich.markup import escape as escape_rich_markup
@@ -71,6 +72,16 @@ def _markdown_code_span(value: object) -> str:
     return f"{fence}{text}{fence}"
 
 
+def _markdown_link(label: object, url: object) -> str:
+    """Build a Markdown link with an escaped label and a minimally safe target."""
+    escaped_label = _escape_markdown_text(label)
+    target = str(url).strip()
+    if not target:
+        return escaped_label
+    safe_target = quote(target, safe=":/?#[]@!$&'*+,;=%-._~")
+    return f"[{escaped_label}]({safe_target})"
+
+
 def _repository_sections(
     commit_data: dict[str, Any],
 ) -> list[tuple[str | None, dict[str, Any]]]:
@@ -89,9 +100,13 @@ def build_json_output(
 
 def build_markdown_output(
     commit_data: dict[str, Any],
+    budget_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Build a paste-ready Markdown standup summary."""
     lines = ["# Standup Summary", ""]
+    note = _format_budget_note(budget_metadata, markdown=True)
+    if note:
+        lines.extend([note, ""])
 
     for repo_name, repo_data in _repository_sections(commit_data):
         if repo_name is not None:
@@ -149,10 +164,14 @@ def build_stats_output(
     commit_data: dict[str, Any],
     *,
     output_format: str = "text",
+    budget_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Build an aggregate-only standup stats report."""
     markdown = output_format == "markdown"
     lines = ["# Standup Stats", ""] if markdown else ["Standup Stats", ""]
+    note = _format_budget_note(budget_metadata, markdown=markdown)
+    if note:
+        lines.extend([note, ""])
     grand = {"commits": 0, "files": set(), "insertions": 0, "deletions": 0}
 
     for repo_name, repo_data in _repository_sections(commit_data):
@@ -572,18 +591,20 @@ def _workflow_board_bucket(item: dict[str, Any]) -> str:
 
 def _format_workflow_board_item(item: dict[str, Any]) -> list[str]:
     pull_request = item["pull_request"]
-    owner = item["owner"]
-    repo_note = f" · {item['repo']}" if item.get("repo") else ""
+    owner = _escape_markdown_text(item["owner"])
+    repo_note = f" · {_escape_markdown_text(item['repo'])}" if item.get("repo") else ""
     title = str(pull_request.get("title") or "Untitled PR")
     number = pull_request.get("number")
     url = str(pull_request.get("url") or "").strip()
     label = f"#{number} {title}"
-    linked = f"[{label}]({url})" if url else label
+    linked = _markdown_link(label, url)
     status_bits = _workflow_status_bits(item)
     lines = [f"- {owner}: {linked}{repo_note} · {' · '.join(status_bits)}"]
     labels = pull_request.get("labels")
     if isinstance(labels, list) and labels:
-        lines.append(f"  - Labels: {', '.join(str(label) for label in labels)}")
+        lines.append(
+            f"  - Labels: {', '.join(_escape_markdown_text(label) for label in labels)}"
+        )
     issues = pull_request.get("linked_issues")
     if isinstance(issues, list) and issues:
         lines.append(f"  - Linked issues: {_format_linked_issues(issues)}")
@@ -593,8 +614,9 @@ def _format_workflow_board_item(item: dict[str, Any]) -> list[str]:
         commit = first["commit"]
         lines.append(
             "  - Evidence: "
-            f"`{_commit_hash_short(commit)}` {commit.get('subject', 'Untitled commit')} "
-            f"({first['date']})"
+            f"{_markdown_code_span(_commit_hash_short(commit))} "
+            f"{_escape_markdown_text(commit.get('subject', 'Untitled commit'))} "
+            f"({_escape_markdown_text(first['date'])})"
         )
     action = _workflow_action_text(item)
     if action:
@@ -640,7 +662,7 @@ def _format_linked_issues(issues: list[object]) -> str:
         label = f"#{number}" if number is not None else title or url
         if title and number is not None:
             label = f"{label} {title}"
-        parts.append(f"[{label}]({url})" if url else label)
+        parts.append(_markdown_link(label, url))
     return ", ".join(parts)
 
 
@@ -767,10 +789,11 @@ def build_insights_output(commit_data: dict[str, Any]) -> str:
         for risk in risks[:8]:
             item = risk["item"]
             commit = item["commit"]
-            repo_note = f" · {item['repo']}" if item.get("repo") else ""
+            repo_note = f" · {_escape_markdown_text(item['repo'])}" if item.get("repo") else ""
             lines.append(
-                f"- {item['author']}: `{_commit_hash_short(commit)}` "
-                f"{commit.get('subject', 'Untitled commit')}{repo_note} — "
+                f"- {_escape_markdown_text(item['author'])}: "
+                f"{_markdown_code_span(_commit_hash_short(commit))} "
+                f"{_escape_markdown_text(commit.get('subject', 'Untitled commit'))}{repo_note} — "
                 f"{_risk_reason_text(risk['reasons'])}"
             )
     else:
@@ -845,7 +868,7 @@ def _format_insights_bucket(
     )
     repos = sorted(str(repo) for repo in data["repos"])
     if repos:
-        summary += f" · repos: {', '.join(repos[:3])}"
+        summary += f" · repos: {', '.join(_escape_markdown_text(repo) for repo in repos[:3])}"
     if include_files and data["files"]:
         summary += f" · files: {_format_inline_paths(sorted(data['files'])[:3])}"
     evidence = _insights_evidence(commits)
@@ -858,14 +881,16 @@ def _insights_evidence(items: list[dict[str, Any]], limit: int = 2) -> str:
     evidence: list[str] = []
     for item in items[:limit]:
         commit = item["commit"]
-        subject = str(commit.get("subject") or "Untitled commit")
-        repo_note = f" ({item['repo']})" if item.get("repo") else ""
-        evidence.append(f"`{_commit_hash_short(commit)}` {subject}{repo_note}")
+        subject = _escape_markdown_text(commit.get("subject") or "Untitled commit")
+        repo_note = (
+            f" ({_escape_markdown_text(item['repo'])})" if item.get("repo") else ""
+        )
+        evidence.append(f"{_markdown_code_span(_commit_hash_short(commit))} {subject}{repo_note}")
     return "; ".join(evidence)
 
 
 def _format_inline_paths(paths: list[str]) -> str:
-    return ", ".join(f"`{path}`" for path in paths)
+    return ", ".join(_markdown_code_span(path) for path in paths)
 
 
 def _insights_theme(commit: dict[str, Any]) -> str:
@@ -931,7 +956,7 @@ def _insights_pr_follow_up(commit: dict[str, Any]) -> str:
     if not isinstance(pull_request, dict) or pull_request.get("number") is None:
         return ""
     title = str(pull_request.get("title") or "").strip()
-    title_text = f" ({title})" if title else ""
+    title_text = f" ({_escape_markdown_text(title)})" if title else ""
     return f"Confirm reviewer/merge plan for PR #{pull_request['number']}{title_text}."
 
 
@@ -943,10 +968,14 @@ def _insights_risk_follow_ups(
     questions = [_team_digest_risk_question(owner, commit, reasons)]
     hash_short = _commit_hash_short(commit)
     if any(reason == "keyword: fix" for reason in reasons):
-        questions.append(f"{owner}: What validation confirms `{hash_short}` fixed the issue?")
+        questions.append(
+            f"{_escape_markdown_text(owner)}: What validation confirms "
+            f"{_markdown_code_span(hash_short)} fixed the issue?"
+        )
     if any(reason.startswith("large ") for reason in reasons):
         questions.append(
-            f"{owner}: Does `{hash_short}` need staged rollout or extra review coverage?"
+            f"{_escape_markdown_text(owner)}: Does {_markdown_code_span(hash_short)} "
+            "need staged rollout or extra review coverage?"
         )
     return questions
 
@@ -994,7 +1023,9 @@ def _format_issue_notes(commit: dict[str, Any]) -> list[str]:
             if title:
                 label = f"{label} {title}"
             escaped_label = _escape_markdown_text(label)
-            notes.append(f"Issue: [{escaped_label}]({url})" if url else f"Issue: {escaped_label}")
+            notes.append(
+                f"Issue: {_markdown_link(label, url)}" if url else f"Issue: {escaped_label}"
+            )
 
     text = f"{commit.get('subject', '')}\n{commit.get('body', '')}"
     existing_urls = {note.partition("(")[2].rstrip(")") for note in notes}
@@ -1003,7 +1034,7 @@ def _format_issue_notes(commit: dict[str, Any]) -> list[str]:
         if clean_url in existing_urls:
             continue
         if any(marker in clean_url.lower() for marker in ("/issues/", "/browse/", "linear.app")):
-            notes.append(f"Issue: [{_escape_markdown_text(clean_url)}]({clean_url})")
+            notes.append(f"Issue: {_markdown_link(clean_url, clean_url)}")
     return notes
 
 
@@ -1043,7 +1074,9 @@ def _team_digest_pr_question(owner: str, commit: dict[str, Any]) -> str:
 
 def _team_digest_issue_question(owner: str, issue_note: str) -> str:
     match = re.search(r"\[([^\]]+)\]", issue_note)
-    issue_label = match.group(1).split()[0] if match else issue_note.replace("Issue: ", "")
+    issue_label = match.group(1).split()[0] if match else _escape_markdown_text(
+        issue_note.replace("Issue: ", "")
+    )
     return (
         f"{_escape_markdown_text(owner)}: Does {issue_label} "
         "need status, owner, or acceptance follow-up?"
@@ -1143,11 +1176,13 @@ def _format_pull_request_note(commit: dict[str, Any], *, markdown: bool) -> str:
     url = str(pull_request.get("url") or "").strip()
     label = f"#{number}"
     if title:
-        label = f"{label} {_escape_markdown_text(title) if markdown else title}"
+        label = f"{label} {title if markdown else title}"
     if url:
         if markdown:
-            return f"PR: [{label}]({url})"
+            return f"PR: {_markdown_link(label, url)}"
         return f"PR: {label} ({url})"
+    if markdown:
+        return f"PR: {_escape_markdown_text(label)}"
     return f"PR: {label}"
 
 
@@ -1175,8 +1210,7 @@ def _format_file_highlights(files: list[dict[str, Any]], limit: int = 3) -> str:
     return ", ".join(highlights)
 
 
-def _format_changelog_budget_note(budget_metadata: dict[str, Any]) -> str:
-    """Format output-budget metadata as a human-readable Markdown note."""
+def _budget_note_parts(budget_metadata: dict[str, Any]) -> list[str]:
     limits = budget_metadata.get("limits", {})
     notes: list[str] = []
     if budget_metadata.get("commits_truncated"):
@@ -1187,14 +1221,48 @@ def _format_changelog_budget_note(budget_metadata: dict[str, Any]) -> str:
             f"{limits.get('max_files_per_commit')} file(s) per commit "
             f"({budget_metadata.get('files_omitted', 0)} omitted)"
         )
-    return "_Note: output was truncated — " + "; ".join(notes) + "._"
+    return notes
+
+
+def _format_budget_note(budget_metadata: dict[str, Any] | None, *, markdown: bool) -> str:
+    """Format output-budget metadata for user-facing raw report notes."""
+    if not budget_metadata:
+        return ""
+
+    notes = _budget_note_parts(budget_metadata)
+    repo_notes = budget_metadata.get("repositories")
+    if isinstance(repo_notes, dict):
+        for repo_name, repo_metadata in repo_notes.items():
+            if not isinstance(repo_metadata, dict) or not repo_metadata.get("truncated"):
+                continue
+            parts = _budget_note_parts(repo_metadata)
+            if parts:
+                repo_label = (
+                    _escape_markdown_text(repo_name) if markdown else str(repo_name)
+                )
+                notes.append(f"{repo_label}: " + "; ".join(parts))
+
+    if not notes:
+        return ""
+    text = "Note: output was truncated - " + "; ".join(notes) + "."
+    return f"_{text}_" if markdown else text
+
+
+def _format_changelog_budget_note(budget_metadata: dict[str, Any]) -> str:
+    """Format output-budget metadata as a human-readable Markdown note."""
+    note = _format_budget_note(budget_metadata, markdown=True)
+    return note.replace(" - ", " — ", 1)
 
 
 def build_text_output(
     commit_data: dict[str, Any],
+    budget_metadata: dict[str, Any] | None = None,
 ) -> str:
     """Build a plain text standup summary suitable for files and terminals."""
     lines = ["Weekly Standup Summary", ""]
+    note = _format_budget_note(budget_metadata, markdown=False)
+    if note:
+        lines.extend([note, ""])
     total_commits = 0
     total_insertions = 0
     total_deletions = 0

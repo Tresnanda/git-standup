@@ -858,6 +858,52 @@ def test_stats_output_formats_multiple_repositories_as_markdown() -> None:
     assert "- **Total: 2 commit(s), 2 file(s), +24/-4 lines**" in output
 
 
+def test_markdown_mode_notes_commit_budget_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits() + _sample_commits())
+
+    exit_code = cli.main(["--markdown", "--no-ai", "--max-commits", "1"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Note: output was truncated" in output
+    assert "commit list limited to 1 commit(s)" in output
+
+
+def test_text_mode_notes_file_budget_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    commits = _sample_commits()
+    commits[0]["files"] = [
+        {"path": "src/auth.py", "insertions": 12, "deletions": 2},
+        {"path": "src/login.py", "insertions": 3, "deletions": 1},
+    ]
+    monkeypatch.setattr(cli, "get_commits", lambda **_: commits)
+
+    exit_code = cli.main(["--no-ai", "--max-files-per-commit", "1"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Note: output was truncated - file lists limited to 1 file(s) per commit" in output
+
+
+def test_stats_only_mode_notes_commit_budget_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(cli, "get_commits", lambda **_: _sample_commits() + _sample_commits())
+
+    exit_code = cli.main(["--stats-only", "--max-commits", "1"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "Note: output was truncated" in output
+    assert "commit list limited to 1 commit(s)" in output
+
+
 def test_changelog_mode_prints_release_note_markdown_without_ai(
     monkeypatch: pytest.MonkeyPatch,
     capsys,
@@ -1082,6 +1128,7 @@ def test_since_last_uses_checkpoint_and_can_write_next_checkpoint(
 
     assert exit_code == 0
     assert captured["since"] == "2026-06-08 09:00:00 +0000"
+    assert captured["until"] == "2026-06-08 17:30:00 +0000"
     data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
     assert data["repositories"][repo_id]["since"] == "2026-06-08 17:30:00 +0000"
     assert data["repositories"][repo_id]["label"] == repo_root
@@ -1120,13 +1167,83 @@ def test_write_checkpoint_updates_after_success_with_no_commits(
         "_checkpoint_timestamp",
         lambda now=None: "2026-06-08 18:00:00 +0000",
     )
-    monkeypatch.setattr(cli, "get_commits", lambda **_kwargs: [])
+    captured: dict[str, object] = {}
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
 
     exit_code = cli.main(["--write-checkpoint", "--no-ai"])
 
     assert exit_code == 0
+    assert captured["until"] == "2026-06-08 18:00:00 +0000"
     data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
     assert data["repositories"][repo_id]["since"] == "2026-06-08 18:00:00 +0000"
+
+
+def test_write_checkpoint_uses_explicit_until_for_fetch_and_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    checkpoint_file = tmp_path / "checkpoints.json"
+    repo_root = str(tmp_path / "repo")
+    repo_id = cli.local_repository_id(repo_root)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "checkpoint_path", lambda: checkpoint_file)
+    monkeypatch.setattr(cli, "get_repo_root", lambda repo_path=None: repo_root)
+    monkeypatch.setattr(
+        cli,
+        "_checkpoint_timestamp",
+        lambda now=None: "2026-06-08 18:00:00 +0000",
+    )
+
+    def fake_get_commits(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(["--until", "2026-06-07", "--write-checkpoint", "--no-ai"])
+
+    assert exit_code == 0
+    assert captured["until"] == "2026-06-07"
+    data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+    assert data["repositories"][repo_id]["since"] == "2026-06-07"
+
+
+def test_remote_api_write_checkpoint_uses_generated_until_and_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    checkpoint_file = tmp_path / "checkpoints.json"
+    repo_id = cli.remote_repository_id("owner/api")
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(cli, "checkpoint_path", lambda: checkpoint_file)
+    monkeypatch.setattr(
+        cli,
+        "_checkpoint_timestamp",
+        lambda now=None: "2026-06-08 18:30:00 +0000",
+    )
+
+    def fake_get_remote_commits(repo: str, **kwargs: object) -> list[dict[str, object]]:
+        captured["repo"] = repo
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(cli, "get_remote_commits", fake_get_remote_commits)
+
+    exit_code = cli.main(
+        ["--remote-repo", "owner/api", "--remote-backend", "api", "--write-checkpoint", "--no-ai"]
+    )
+
+    assert exit_code == 0
+    assert captured["repo"] == "owner/api"
+    assert captured["until"] == "2026-06-08 18:30:00 +0000"
+    data = json.loads(checkpoint_file.read_text(encoding="utf-8"))
+    assert data["repositories"][repo_id]["since"] == "2026-06-08 18:30:00 +0000"
+    assert data["repositories"][repo_id]["label"] == "owner/api"
 
 
 def test_remote_checkpoint_labels_strip_credentials_and_normalize_urls() -> None:
@@ -1326,6 +1443,12 @@ def test_parse_args_accepts_update_command() -> None:
     args = cli.parse_args(["update"])
 
     assert args.command == "update"
+
+
+def test_parse_args_accepts_doctor_command() -> None:
+    args = cli.parse_args(["doctor"])
+
+    assert args.command == "doctor"
 
 
 def test_update_command_runs_pipx_reinstall(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1579,6 +1702,65 @@ def test_config_show_reads_saved_defaults(
     out = capsys.readouterr().out
     assert "provider: gemini" in out
     assert "model: gemini-3.5-flash" in out
+
+
+def test_doctor_prints_sections_and_masks_detected_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    secret = "sk-doctor-secret-12345"
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(cli, "config_path", lambda: config_file)
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda _path: cli.AIConfig(provider="openai", model="gpt-4o-mini"),
+    )
+    monkeypatch.setattr(
+        cli.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in {"git", "gh"} else None,
+    )
+    monkeypatch.setattr(cli, "get_repo_root", lambda repo_path=None: str(tmp_path / "repo"))
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    exit_code = cli.main(["doctor"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "git-standup" in captured.out
+    assert "Python" in captured.out
+    assert "Git" in captured.out
+    assert "GitHub CLI" in captured.out
+    assert "AI" in captured.out
+    assert "Next steps" in captured.out
+    assert str(config_file) in captured.out
+    assert "repository:" in captured.out
+    assert "saved config: provider=openai, model=gpt-4o-mini" in captured.out
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert "OPENAI_API_KEY=" in captured.out
+
+
+def test_doctor_returns_error_for_invalid_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    config_file = tmp_path / "config.toml"
+    monkeypatch.setattr(cli, "config_path", lambda: config_file)
+
+    def boom(_path):
+        raise ValueError("bad config")
+
+    monkeypatch.setattr(cli, "load_config", boom)
+
+    exit_code = cli.main(["doctor"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Error: invalid config: bad config" in captured.err
 
 
 def test_config_set_provider_saves_defaults(
@@ -2653,6 +2835,60 @@ def test_configure_ai_interactive_sets_key_and_saves(
     text = config_file.read_text(encoding="utf-8")
     assert 'provider = "openai"' in text
     assert "api_key" not in text  # secrets never written to config
+    assert secret not in text
+
+
+def test_configure_ai_interactive_custom_provider_uses_configured_key_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    capsys,
+) -> None:
+    secret = "gateway-secret-token-67890"
+    config_file = tmp_path / "config.toml"
+    choices = iter(["provider", "custom"])
+    prompts: list[tuple[str, str]] = []
+    getpass_prompts: list[str] = []
+    monkeypatch.setattr(cli, "_choice", lambda *_a, **_k: next(choices))
+    monkeypatch.setattr(cli, "_prompt_model", lambda default: default)
+    monkeypatch.setattr(
+        cli.Prompt,
+        "ask",
+        lambda prompt, default="": prompts.append((prompt, str(default)))
+        or (
+            "https://gateway.example/v1"
+            if prompt == "OpenAI-compatible base URL"
+            else "MY_GATEWAY_KEY"
+        ),
+    )
+    monkeypatch.setattr(
+        cli.getpass,
+        "getpass",
+        lambda prompt="": getpass_prompts.append(prompt) or secret,
+    )
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("MY_GATEWAY_KEY", raising=False)
+
+    config = cli.configure_ai_interactive(config_file)
+    captured = capsys.readouterr()
+
+    assert config is not None
+    assert config.provider == "custom"
+    assert config.base_url == "https://gateway.example/v1"
+    assert config.api_key_env == "MY_GATEWAY_KEY"
+    assert os.environ["MY_GATEWAY_KEY"] == secret
+    assert "OPENAI_API_KEY" not in os.environ
+    assert prompts == [
+        ("OpenAI-compatible base URL", "https://api.openai.com/v1"),
+        ("API key environment variable", "OPENAI_API_KEY"),
+    ]
+    assert getpass_prompts == ["MY_GATEWAY_KEY (hidden; leave blank to skip): "]
+    assert secret not in captured.out
+    assert secret not in captured.err
+    text = config_file.read_text(encoding="utf-8")
+    assert 'provider = "custom"' in text
+    assert 'base_url = "https://gateway.example/v1"' in text
+    assert 'api_key_env = "MY_GATEWAY_KEY"' in text
     assert secret not in text
 
 

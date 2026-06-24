@@ -47,6 +47,9 @@ jobs:
       - name: Test
         run: pytest
 
+      - name: Audit dependencies
+        run: python -m pip_audit
+
       - name: Build package
         run: python -m build
 
