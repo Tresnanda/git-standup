@@ -1648,10 +1648,33 @@ def run_wizard() -> int:
         )
         repo = "."
         remote_repos: list[str] = []
+        remote_backend = "clone"
+        all_branches = False
         if repo_source == "other":
             repo = Prompt.ask("Repository path", default=".")
         elif repo_source == "remote":
             remote_repos = _choose_remote_repositories()
+            remote_backend = _numbered_choice(
+                "Remote backend",
+                [
+                    (
+                        "clone",
+                        "Clone",
+                        "Full git history; supports all branches and path filters.",
+                    ),
+                    (
+                        "api",
+                        "GitHub API",
+                        "Faster, no clone; default branch only.",
+                    ),
+                ],
+                "clone",
+            )
+            if remote_backend == "clone":
+                all_branches = _confirm(
+                    "Include work on all branches, not just the default branch?",
+                    default=True,
+                )
 
         _wizard_separator()
         preset = _numbered_choice(
@@ -1681,6 +1704,8 @@ def run_wizard() -> int:
         }
         if remote_repos:
             answers["remote_repos"] = remote_repos
+            answers["remote_backend"] = remote_backend
+            answers["all_branches"] = all_branches
         if author_choice == "me":
             answers["author"] = "me"
         elif author_choice == "custom":

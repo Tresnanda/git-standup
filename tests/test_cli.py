@@ -1950,9 +1950,11 @@ def test_run_wizard_starts_with_repository_source_and_remote_multi_select(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    answers = iter(["3", "1,2", "2", "1", "1"])
-    # Polish with AI? -> yes, Save? -> no, Run it now -> no
-    confirms = iter([True, False, False])
+    # repo source -> remote(3), repos -> 1,2, backend -> clone(1), preset -> week(2),
+    # author -> all(1), format -> markdown(1)
+    answers = iter(["3", "1,2", "1", "2", "1", "1"])
+    # All branches? -> yes, Polish with AI? -> yes, Save? -> no, Run it now -> no
+    confirms = iter([True, True, False, False])
 
     monkeypatch.setattr(cli.Prompt, "ask", lambda *_args, **_kwargs: next(answers))
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
@@ -1974,11 +1976,12 @@ def test_run_wizard_starts_with_repository_source_and_remote_multi_select(
     assert "Current directory - Use this Git repository." in out
     assert "Remote repository - Pick one or more GitHub repositories." in out
     assert "Choose remote repositories:" in out
+    assert "Remote backend:" in out
     assert "1) Tresnanda/api" in out
     assert "2) Tresnanda/web" in out
     assert (
         "Generated command:\n  git-standup --remote-repo Tresnanda/api "
-        "--remote-repo Tresnanda/web --days 7 --markdown"
+        "--remote-repo Tresnanda/web --all-branches --days 7 --markdown"
     ) in out
 
 
