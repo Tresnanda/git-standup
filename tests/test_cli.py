@@ -1756,6 +1756,47 @@ def test_build_wizard_args_accepts_multiple_remote_repositories() -> None:
     ]
 
 
+def test_build_wizard_args_emits_api_backend() -> None:
+    args = cli.build_wizard_args(
+        {
+            "remote_repos": ["owner/api"],
+            "remote_backend": "api",
+            "preset": "week",
+            "format": "markdown",
+            "ai": True,
+        }
+    )
+    assert "--remote-backend" in args
+    assert args[args.index("--remote-backend") + 1] == "api"
+
+
+def test_build_wizard_args_clone_backend_omits_backend_flag() -> None:
+    args = cli.build_wizard_args(
+        {
+            "remote_repos": ["owner/api"],
+            "remote_backend": "clone",
+            "preset": "week",
+            "format": "markdown",
+            "ai": True,
+        }
+    )
+    assert "--remote-backend" not in args
+
+
+def test_build_wizard_args_emits_all_branches() -> None:
+    args = cli.build_wizard_args(
+        {
+            "remote_repos": ["owner/api"],
+            "remote_backend": "clone",
+            "all_branches": True,
+            "preset": "week",
+            "format": "markdown",
+            "ai": True,
+        }
+    )
+    assert "--all-branches" in args
+
+
 def test_build_wizard_args_text_with_ai_is_the_default_report() -> None:
     args = cli.build_wizard_args(
         {"repo": ".", "preset": "week", "author": "me", "format": "text", "ai": True}

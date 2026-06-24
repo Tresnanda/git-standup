@@ -599,10 +599,15 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     if isinstance(remote_repos, list) and remote_repos:
         for repo in remote_repos:
             args.extend(["--remote-repo", str(repo)])
+        if str(answers.get("remote_backend") or "clone") == "api":
+            args.extend(["--remote-backend", "api"])
     else:
         repo = str(answers.get("repo") or ".")
         if repo != ".":
             args.extend(["--repo", repo])
+
+    if answers.get("all_branches"):
+        args.append("--all-branches")
 
     preset = str(answers.get("preset") or "week")
     if preset == "today":
