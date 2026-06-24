@@ -1860,6 +1860,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--all-branches",
+        action="store_true",
+        help=(
+            "Include commits from all branches, not just the default branch "
+            "(clone backend / local repos only; not supported with --remote-backend api)"
+        ),
+    )
+    parser.add_argument(
         "--since",
         type=_date_string,
         default=None,
@@ -2212,6 +2220,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         budget_metadata: dict[str, Any] | None = None
         multi_repo_commit_data: dict[str, Any] | None = None
+        if args.all_branches and args.base_branch:
+            print(
+                "Warning: --all-branches is ignored when --base-branch is set.",
+                file=sys.stderr,
+            )
         if args.remote_repos:
             repo_commits: list[tuple[str, list[dict[str, Any]]]] = []
             repo_budget_metadata: dict[str, Any] = {}
@@ -2221,6 +2234,7 @@ def main(argv: list[str] | None = None) -> int:
                 validate_remote_api_options(
                     base_branch=args.base_branch,
                     pathspecs=args.pathspecs,
+                    all_branches=args.all_branches,
                 )
                 api_cache = GitHubApiRunCache()
                 for remote_repo in args.remote_repos:
@@ -2283,6 +2297,7 @@ def main(argv: list[str] | None = None) -> int:
                             until=args.until,
                             max_commits=commit_fetch_limit,
                             exclude_merges=args.exclude_merges,
+                            all_branches=args.all_branches,
                             pathspecs=args.pathspecs,
                             author_aliases=author_aliases,
                         )
@@ -2329,6 +2344,7 @@ def main(argv: list[str] | None = None) -> int:
                 until=args.until,
                 max_commits=commit_fetch_limit,
                 exclude_merges=args.exclude_merges,
+                all_branches=args.all_branches,
                 pathspecs=args.pathspecs,
                 author_aliases=author_aliases,
             )

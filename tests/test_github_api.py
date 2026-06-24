@@ -301,3 +301,11 @@ def test_cli_json_includes_rate_limit_skip_metadata(
         "commit_detail": {"skipped": True, "reason": "rate_limit"},
         "pull_request_enrichment": {"skipped": True, "reason": "rate_limit"},
     }
+
+
+def test_validate_remote_api_options_rejects_all_branches() -> None:
+    from git_standup.github_api import validate_remote_api_options
+
+    with pytest.raises(RuntimeError) as excinfo:
+        validate_remote_api_options(base_branch=None, pathspecs=None, all_branches=True)
+    assert "--all-branches" in str(excinfo.value)

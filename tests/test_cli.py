@@ -2301,6 +2301,57 @@ def test_clone_remote_repo_reports_timeout(
     assert "timed out" in str(excinfo.value)
 
 
+def test_parse_args_all_branches_defaults_false() -> None:
+    args = cli.parse_args(["--remote-repo", "owner/name"])
+    assert args.all_branches is False
+
+
+def test_parse_args_accepts_all_branches() -> None:
+    args = cli.parse_args(["--remote-repo", "owner/name", "--all-branches"])
+    assert args.all_branches is True
+
+
+def test_api_backend_rejects_all_branches(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "owner/name",
+            "--remote-backend",
+            "api",
+            "--all-branches",
+            "--no-ai",
+        ]
+    )
+    assert exit_code == 1
+    assert "--all-branches" in capsys.readouterr().err
+
+
+def test_clone_backend_passes_all_branches_to_get_commits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_get_commits(**kwargs):
+        captured.update(kwargs)
+        return _sample_commits()
+
+    monkeypatch.setattr(cli, "_clone_remote_repo", lambda repo, parent: tmp_path)
+    monkeypatch.setattr(cli.tempfile, "TemporaryDirectory", lambda: _TempDir(tmp_path))
+    monkeypatch.setattr(cli, "get_commits", fake_get_commits)
+
+    exit_code = cli.main(
+        ["--remote-repo", "owner/name", "--all-branches", "--no-ai", "--markdown"]
+    )
+
+    assert exit_code == 0
+    assert captured["all_branches"] is True
+
+
 def test_interactive_choice_collapses_to_summary_on_confirm(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

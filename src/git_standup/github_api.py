@@ -194,13 +194,17 @@ def get_remote_commits(
     ]
 
 
-def validate_remote_api_options(*, base_branch: str | None, pathspecs: list[str] | None) -> None:
+def validate_remote_api_options(
+    *, base_branch: str | None, pathspecs: list[str] | None, all_branches: bool = False
+) -> None:
     """Raise a helpful error for git-native filters unsupported by API mode."""
     unsupported: list[str] = []
     if base_branch:
         unsupported.append("--base-branch")
     if pathspecs:
         unsupported.append("--path/--pathspec")
+    if all_branches:
+        unsupported.append("--all-branches")
     if unsupported:
         joined = " and ".join(unsupported)
         raise RuntimeError(
