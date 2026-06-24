@@ -303,9 +303,93 @@ def test_cli_json_includes_rate_limit_skip_metadata(
     }
 
 
-def test_validate_remote_api_options_rejects_all_branches() -> None:
+def test_validate_remote_api_options_allows_all_branches() -> None:
     from git_standup.github_api import validate_remote_api_options
 
-    with pytest.raises(RuntimeError) as excinfo:
-        validate_remote_api_options(base_branch=None, pathspecs=None, all_branches=True)
-    assert "--all-branches" in str(excinfo.value)
+    # API mode now supports all-branches; combining it with API must not raise.
+    validate_remote_api_options(base_branch=None, pathspecs=None)
+
+
+def test_get_remote_commits_all_branches_dedupes_across_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        del headers
+        if endpoint == "/repos/Tresnanda/api/branches":
+            return [{"name": "main"}, {"name": "feature-x"}]
+        if endpoint == "/repos/Tresnanda/api/commits":
+            sha = (params or {}).get("sha")
+            if sha == "main":
+                return [_api_commit("aaa"), _api_commit("shared")]
+            if sha == "feature-x":
+                return [_api_commit("shared"), _api_commit("ccc")]
+            raise AssertionError(f"unexpected sha: {sha}")
+        if endpoint.startswith("/repos/Tresnanda/api/commits/"):
+            sha = endpoint.rsplit("/", 1)[-1]
+            return {
+                **_api_commit(sha),
+                "files": [{"filename": "src/app.py", "additions": 1, "deletions": 0}],
+            }
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+    cache = GitHubApiRunCache()
+
+    commits = get_remote_commits(
+        "Tresnanda/api", since="2026-03-01", all_branches=True, cache=cache
+    )
+
+    hashes = sorted(commit["hash"] for commit in commits)
+    assert hashes == ["aaa", "ccc", "shared"]
+
+
+def test_get_remote_commits_all_branches_stops_on_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        del headers
+        if endpoint == "/repos/Tresnanda/api/branches":
+            return [{"name": "main"}, {"name": "feature-x"}]
+        if endpoint == "/repos/Tresnanda/api/commits":
+            sha = (params or {}).get("sha")
+            if sha == "main":
+                return [_api_commit("aaa")]
+            raise GitHubRateLimitError("API rate limit exceeded")
+        if endpoint.startswith("/repos/Tresnanda/api/commits/"):
+            return {**_api_commit("aaa"), "files": []}
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+    cache = GitHubApiRunCache()
+
+    commits = get_remote_commits(
+        "Tresnanda/api", since="2026-03-01", all_branches=True, cache=cache
+    )
+
+    # main's commit is kept; feature-x rate-limited out, no crash.
+    assert [commit["hash"] for commit in commits] == ["aaa"]
+    assert cache.rate_limited is True
+
+
+def test_to_github_datetime_accepts_space_separated_offset() -> None:
+    from git_standup.github_api import _to_github_datetime
+
+    # Matches the CLI's accepted "YYYY-MM-DD HH:MM:SS +0800" format.
+    assert (
+        _to_github_datetime("2026-06-24 00:00:00 +0800", end_of_day=False)
+        == "2026-06-23T16:00:00Z"
+    )
+    assert (
+        _to_github_datetime("2026-06-24 12:30:00 -0500", end_of_day=False)
+        == "2026-06-24T17:30:00Z"
+    )

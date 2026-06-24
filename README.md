@@ -414,15 +414,16 @@ Remote reports clone temporary copies for the run by default, then format the ou
 git-standup --remote-repo Tresnanda/api --remote-backend api --days 7 --json --no-ai
 ```
 
-API mode supports date ranges, author matching, merge exclusion, commit budgets, changed-file stats, and best-effort PR links. Git-native `--base-branch` and `--path/--pathspec` filters require clone mode.
+API mode supports date ranges, author matching, merge exclusion, commit budgets, changed-file stats, best-effort PR links, and `--all-branches`. Git-native `--base-branch` and `--path/--pathspec` filters require clone mode.
 
 By default only the repository's default branch is read. To include work that lives on feature or release branches (for example, commits pushed today but not yet merged to `main`), add `--all-branches`:
 
 ```bash
 git-standup --remote-repo Tresnanda/api --all-branches --author me --days 7 --markdown
+git-standup --remote-repo Tresnanda/api --remote-backend api --all-branches --author me
 ```
 
-`--all-branches` works for local repositories and the clone backend. It is not supported with `--remote-backend api` (GitHub's commits API reads a single branch), and it is ignored when `--base-branch` is set.
+`--all-branches` works for local repositories and both remote backends. With the API backend it enumerates every branch and fetches commits per branch (more API calls), then deduplicates. It is ignored when `--base-branch` is set.
 
 ### Paste-Ready Markdown
 
@@ -468,8 +469,7 @@ options:
                        Backend for --remote-repo: clone repositories locally
                        (default) or query GitHub through gh api without cloning.
   --all-branches       Include commits from all branches, not just the default
-                       branch. Clone backend and local repos only; not supported
-                       with --remote-backend api.
+                       branch. Works with local repos and both remote backends.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.
   --until DATE         End date for the report window, in YYYY-MM-DD format.
   --author AUTHOR      Filter by author. Use "me" for the current Git user.

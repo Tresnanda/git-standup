@@ -4,7 +4,8 @@ All notable changes to git-standup are documented here.
 
 ## Unreleased
 
-- Added `--all-branches` to include commits from every branch (clone backend and local repos), not just the default branch.
+- Added `--all-branches` to include commits from every branch, not just the default branch — supported by local repos and both remote backends (the API backend enumerates branches and deduplicates).
+- Fixed the API backend rejecting `YYYY-MM-DD HH:MM:SS +0800` style `--since`/`--until` values (space before the timezone offset).
 - The wizard now asks for the remote backend (clone or GitHub API) and offers all-branch coverage for remote reports.
 - Remote clone failures now report the underlying git error (auth, SSO, timeout) instead of a generic message.
 - Restyled the interactive wizard pickers with a cleaner accent layout.

@@ -2355,11 +2355,17 @@ def test_parse_args_accepts_all_branches() -> None:
     assert args.all_branches is True
 
 
-def test_api_backend_rejects_all_branches(
+def test_api_backend_supports_all_branches(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_get_remote_commits(repo, **kwargs):
+        captured.update(kwargs)
+        return _sample_commits()
+
     monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
+    monkeypatch.setattr(cli, "get_remote_commits", fake_get_remote_commits)
     exit_code = cli.main(
         [
             "--remote-repo",
@@ -2368,10 +2374,11 @@ def test_api_backend_rejects_all_branches(
             "api",
             "--all-branches",
             "--no-ai",
+            "--markdown",
         ]
     )
-    assert exit_code == 1
-    assert "--all-branches" in capsys.readouterr().err
+    assert exit_code == 0
+    assert captured["all_branches"] is True
 
 
 def test_clone_backend_passes_all_branches_to_get_commits(

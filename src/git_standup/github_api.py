@@ -11,7 +11,7 @@ from typing import Any
 from git_standup.author_aliases import AuthorAliases
 
 _GITHUB_DATETIME_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:?\d{2})?)?$"
+    r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}:\d{2}(?: ?(?:Z|[+-]\d{2}:?\d{2}))?)?$"
 )
 
 
@@ -114,6 +114,7 @@ def get_remote_commits(
     until: str | None = None,
     max_commits: int | None = None,
     exclude_merges: bool = False,
+    all_branches: bool = False,
     include_prs: bool = False,
     author_aliases: AuthorAliases | None = None,
     cache: GitHubApiRunCache | None = None,
@@ -135,7 +136,6 @@ def get_remote_commits(
         return []
     if author_aliases is not None:
         author_filter = author_aliases.expand_filter(author_filter)
-    page = 1
     per_page = 100
     if since:
         since_datetime = _to_github_datetime(since, end_of_day=False)
@@ -145,16 +145,56 @@ def get_remote_commits(
                 datetime.now(timezone.utc) - timedelta(days=days)
             ).isoformat().replace("+00:00", "Z")
         since_datetime = run_cache.default_since
-    params: dict[str, str | int] = {
+    base_params: dict[str, str | int] = {
         "per_page": per_page,
         "since": since_datetime,
     }
     if until:
-        params["until"] = _to_github_datetime(until, end_of_day=True)
+        base_params["until"] = _to_github_datetime(until, end_of_day=True)
 
+    if all_branches:
+        matching_items = _collect_all_branch_items(
+            run_cache,
+            repo_slug,
+            base_params=base_params,
+            author_filter=author_filter,
+            exclude_merges=exclude_merges,
+            max_commits=max_commits,
+        )
+    else:
+        matching_items = _collect_ref_commit_items(
+            run_cache,
+            repo_slug,
+            base_params=base_params,
+            author_filter=author_filter,
+            exclude_merges=exclude_merges,
+            max_commits=max_commits,
+        )
+
+    return [
+        _commit_from_api_item(repo_slug, item, include_prs=include_prs, cache=run_cache)
+        for item in matching_items
+    ]
+
+
+def _collect_ref_commit_items(
+    run_cache: GitHubApiRunCache,
+    repo_slug: str,
+    *,
+    base_params: dict[str, str | int],
+    author_filter: str | None,
+    exclude_merges: bool,
+    max_commits: int | None,
+    sha: str | None = None,
+) -> list[dict[str, Any]]:
+    """Collect raw matching commit items for one ref (default branch when sha is None)."""
+    per_page = int(base_params["per_page"])
     matching_items: list[dict[str, Any]] = []
+    page = 1
     while True:
-        page_params = {**params, "page": page}
+        page_params: dict[str, str | int] = {**base_params, "page": page}
+        if sha is not None:
+            page_params["sha"] = sha
         page_endpoint = f"/repos/{repo_slug}/commits"
         page_cache_key = run_cache.key(page_endpoint, page_params, None)
         if run_cache.rate_limited and page_cache_key not in run_cache.responses:
@@ -188,23 +228,86 @@ def get_remote_commits(
             break
         page += 1
 
-    return [
-        _commit_from_api_item(repo_slug, item, include_prs=include_prs, cache=run_cache)
-        for item in matching_items
-    ]
+    return matching_items
 
 
-def validate_remote_api_options(
-    *, base_branch: str | None, pathspecs: list[str] | None, all_branches: bool = False
-) -> None:
+def _list_branch_names(run_cache: GitHubApiRunCache, repo_slug: str) -> list[str]:
+    """Return every branch name for a repository, following pagination."""
+    names: list[str] = []
+    page = 1
+    per_page = 100
+    while True:
+        page_items = _cached_gh_api_json(
+            run_cache,
+            f"/repos/{repo_slug}/branches",
+            params={"per_page": per_page, "page": page},
+            repo_slug=repo_slug,
+        )
+        if not isinstance(page_items, list):
+            raise RuntimeError(f"GitHub API returned unexpected branch data for {repo_slug}")
+        for item in page_items:
+            if isinstance(item, dict) and item.get("name"):
+                names.append(str(item["name"]))
+        if len(page_items) < per_page:
+            break
+        page += 1
+    return names
+
+
+def _api_item_commit_date(item: dict[str, Any]) -> str:
+    commit = _as_dict(item.get("commit"))
+    author = _as_dict(commit.get("author"))
+    return str(author.get("date") or "")
+
+
+def _collect_all_branch_items(
+    run_cache: GitHubApiRunCache,
+    repo_slug: str,
+    *,
+    base_params: dict[str, str | int],
+    author_filter: str | None,
+    exclude_merges: bool,
+    max_commits: int | None,
+) -> list[dict[str, Any]]:
+    """Collect deduplicated commit items across every branch of a repository.
+
+    Branches share ancestor commits, so items are deduplicated by SHA before the
+    expensive per-commit detail fetch. If GitHub rate-limits mid-enumeration, the
+    branches already collected are kept rather than failing the whole run.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    try:
+        for branch in _list_branch_names(run_cache, repo_slug):
+            if run_cache.rate_limited:
+                break
+            for item in _collect_ref_commit_items(
+                run_cache,
+                repo_slug,
+                base_params=base_params,
+                author_filter=author_filter,
+                exclude_merges=exclude_merges,
+                max_commits=max_commits,
+                sha=branch,
+            ):
+                sha = str(item.get("sha") or "")
+                if sha and sha not in seen:
+                    seen[sha] = item
+    except GitHubRateLimitError:
+        run_cache.mark_rate_limited(repo_slug)
+
+    ordered = sorted(seen.values(), key=_api_item_commit_date, reverse=True)
+    if max_commits is not None:
+        ordered = ordered[:max_commits]
+    return ordered
+
+
+def validate_remote_api_options(*, base_branch: str | None, pathspecs: list[str] | None) -> None:
     """Raise a helpful error for git-native filters unsupported by API mode."""
     unsupported: list[str] = []
     if base_branch:
         unsupported.append("--base-branch")
     if pathspecs:
         unsupported.append("--path/--pathspec")
-    if all_branches:
-        unsupported.append("--all-branches")
     if unsupported:
         joined = " and ".join(unsupported)
         raise RuntimeError(
@@ -238,7 +341,10 @@ def _to_github_datetime(value: str, *, end_of_day: bool) -> str:
         return datetime.combine(parsed_date, parsed_time, tzinfo=timezone.utc).isoformat().replace(
             "+00:00", "Z"
         )
-    normalized = value.replace(" ", "T")
+    # Separate the date and time with "T", and drop an optional space that
+    # precedes a timezone offset (e.g. "2026-06-24 00:00:00 +0800").
+    normalized = re.sub(r"^(\d{4}-\d{2}-\d{2}) ", r"\1T", value)
+    normalized = re.sub(r" (?=Z|[+-]\d{2})", "", normalized)
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
     if re.search(r"[+-]\d{4}$", normalized):

@@ -1688,16 +1688,15 @@ def run_wizard() -> int:
                     (
                         "api",
                         "GitHub API",
-                        "Faster, no clone; default branch only.",
+                        "Faster, no clone; supports all branches.",
                     ),
                 ],
                 "clone",
             )
-            if remote_backend == "clone":
-                all_branches = _confirm(
-                    "Include work on all branches, not just the default branch?",
-                    default=True,
-                )
+            all_branches = _confirm(
+                "Include work on all branches, not just the default branch?",
+                default=True,
+            )
 
         _wizard_separator()
         preset = _numbered_choice(
@@ -1917,7 +1916,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Include commits from all branches, not just the default branch "
-            "(clone backend / local repos only; not supported with --remote-backend api)"
+            "(works with local repos and both remote backends)"
         ),
     )
     parser.add_argument(
@@ -2287,7 +2286,6 @@ def main(argv: list[str] | None = None) -> int:
                 validate_remote_api_options(
                     base_branch=args.base_branch,
                     pathspecs=args.pathspecs,
-                    all_branches=args.all_branches,
                 )
                 api_cache = GitHubApiRunCache()
                 for remote_repo in args.remote_repos:
@@ -2303,6 +2301,7 @@ def main(argv: list[str] | None = None) -> int:
                         until=args.until,
                         max_commits=commit_fetch_limit,
                         exclude_merges=args.exclude_merges,
+                        all_branches=args.all_branches,
                         include_prs=args.include_prs,
                         author_aliases=author_aliases,
                         cache=api_cache,
