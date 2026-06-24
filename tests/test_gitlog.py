@@ -269,6 +269,60 @@ def test_get_commits_appends_pathspecs_after_separator(monkeypatch) -> None:
     assert log_cmd[separator_index + 1 :] == ["src", "tests/test_cli.py"]
 
 
+def test_get_commits_all_branches_adds_all_flag(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    get_commits(repo_path="/workspace/app", since="2026-01-01", all_branches=True)
+
+    assert "--all" in calls[1]
+
+
+def test_get_commits_without_all_branches_omits_all_flag(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    get_commits(repo_path="/workspace/app", since="2026-01-01")
+
+    assert "--all" not in calls[1]
+
+
+def test_get_commits_base_branch_takes_precedence_over_all_branches(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[-2:] == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="/workspace/app\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    get_commits(
+        repo_path="/workspace/app",
+        since="2026-01-01",
+        base_branch="main",
+        all_branches=True,
+    )
+
+    assert "--all" not in calls[1]
+    assert "main..HEAD" in calls[1]
+
+
 def test_get_commits_expands_me_with_author_aliases(monkeypatch) -> None:
     calls: list[list[str]] = []
 

@@ -136,6 +136,7 @@ def get_commits(
     until: str | None = None,
     max_commits: int | None = None,
     exclude_merges: bool = False,
+    all_branches: bool = False,
     pathspecs: list[str] | None = None,
     author_aliases: AuthorAliases | None = None,
 ) -> list[dict[str, Any]]:
@@ -166,6 +167,7 @@ def get_commits(
                 until=until,
                 max_commits=max_commits,
                 exclude_merges=exclude_merges,
+                all_branches=all_branches,
                 pathspecs=pathspecs,
                 author_aliases=None,
             ):
@@ -210,6 +212,9 @@ def get_commits(
 
     if exclude_merges:
         cmd.append("--no-merges")
+
+    if all_branches and not base_branch:
+        cmd.append("--all")
 
     if max_commits is not None:
         cmd.extend(["-n", str(max_commits)])
