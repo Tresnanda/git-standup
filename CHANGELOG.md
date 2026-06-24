@@ -4,6 +4,10 @@ All notable changes to git-standup are documented here.
 
 ## Unreleased
 
+- Added `--all-branches` to include commits from every branch (clone backend and local repos), not just the default branch.
+- The wizard now asks for the remote backend (clone or GitHub API) and offers all-branch coverage for remote reports.
+- Remote clone failures now report the underlying git error (auth, SSO, timeout) instead of a generic message.
+- Restyled the interactive wizard pickers with a cleaner accent layout.
 - Added easy presets: `git-standup me`, `git-standup week`, and `git-standup branch`.
 - Added positional repository paths, so `git-standup ../repo --markdown` works without `--repo`.
 - Added `--out` as a shorter alias for `--output`.
