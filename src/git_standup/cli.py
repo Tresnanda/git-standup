@@ -1358,8 +1358,15 @@ def _clone_remote_repo(repo: str, parent: Path) -> Path:
                 check=True,
                 timeout=120,
             )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"Could not clone remote repository {repo}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Cloning {repo} timed out after 120s — check your network/VPN and retry"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"exit code {exc.returncode}"
+        raise RuntimeError(f"Could not clone remote repository {repo}: {detail}") from exc
+    except OSError as exc:
+        raise RuntimeError(f"Could not clone remote repository {repo}: {exc}") from exc
     return target
 
 

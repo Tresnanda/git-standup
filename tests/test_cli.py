@@ -2265,6 +2265,42 @@ def test_clone_remote_repo_does_not_use_blobless_filter(
         assert "--filter=blob:none" not in captured["cmd"]
 
 
+def test_clone_remote_repo_surfaces_git_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(cmd, **kwargs):
+        raise subprocess.CalledProcessError(
+            returncode=128, cmd=cmd, output="", stderr="ERROR: SAML SSO enforced"
+        )
+
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        cli._clone_remote_repo("owner/name", tmp_path)
+
+    message = str(excinfo.value)
+    assert "owner/name" in message
+    assert "SAML SSO enforced" in message
+
+
+def test_clone_remote_repo_reports_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=120)
+
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        cli._clone_remote_repo("owner/name", tmp_path)
+
+    assert "timed out" in str(excinfo.value)
+
+
 def test_interactive_choice_collapses_to_summary_on_confirm(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
