@@ -2452,6 +2452,22 @@ def test_multi_select_scrolls_viewport_with_cursor(
     assert "Showing 4-9 of 20. Selected: 0." in out
 
 
+def test_multi_select_filters_with_search(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter(["/", "p", "a", "y", " ", "\r"])
+
+    selected = cli._interactive_multi_select(
+        "Choose branches",
+        ["main", "feature/payment-link", "feature/pricing"],
+        key_reader=lambda: next(keys),
+    )
+
+    assert selected == ["feature/payment-link"]
+    out = capsys.readouterr().out
+    assert "Search: pay" in out
+
+
 def test_tabbed_multi_select_uses_horizontal_arrows(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -2470,8 +2486,27 @@ def test_tabbed_multi_select_uses_horizontal_arrows(
     assert selected == ["org/web"]
     out = capsys.readouterr().out
     assert "Tabs: Owned | [Organizations] | Collaborator" in out
-    assert "←/→ tabs · ↑/↓ move · space select · ⏎ confirm · a all · q quit" in out
+    assert "←/→ tabs · ↑/↓ move · space select · ⏎ confirm · / search · a all · q quit" in out
     assert "\x1b[36m❯\x1b[0m [ ] org/web" in out
+
+
+def test_tabbed_multi_select_filters_with_search(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter(["/", "b", "i", " ", "\r"])
+
+    selected = cli._interactive_tabbed_multi_select(
+        "Choose remote repositories",
+        {
+            "Owned": ["me/api", "me/billing"],
+            "Organizations": ["org/api"],
+        },
+        key_reader=lambda: next(keys),
+    )
+
+    assert selected == ["me/billing"]
+    out = capsys.readouterr().out
+    assert "Search: bi" in out
 
 
 def test_interactive_choice_uses_arrow_keys_to_select(
@@ -2492,8 +2527,28 @@ def test_interactive_choice_uses_arrow_keys_to_select(
     assert selected == "text"
     out = capsys.readouterr().out
     assert "\x1b[1mOutput format\x1b[0m" in out
-    assert "↑/↓ move · ⏎ select · q quit" in out
-    assert "\x1b[4F\x1b[J" in out
+    assert "↑/↓ move · ⏎ select · / search · q quit" in out
+    assert "\x1b[5F\x1b[J" in out
+
+
+def test_interactive_choice_filters_with_search(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    keys = iter(["/", "p", "l", "\r"])
+
+    selected = cli._interactive_choice(
+        "Output format",
+        [
+            ("markdown", "Markdown", "Paste-ready Markdown."),
+            ("plain", "Plain text", "Simple terminal summary."),
+        ],
+        "markdown",
+        key_reader=lambda: next(keys),
+    )
+
+    assert selected == "plain"
+    out = capsys.readouterr().out
+    assert "Search: pl" in out
 
 
 def test_interactive_choice_q_cancels_instead_of_selecting_default() -> None:

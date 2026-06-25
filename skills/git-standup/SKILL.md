@@ -212,7 +212,7 @@ The wizard supports:
 - everyone, current user, or selected authors
 - Markdown, plain text, JSON, or changelog output
 - file saving
-- long author/repository pickers with a bounded viewport
+- searchable long author/repository/branch pickers with a bounded viewport
 
 In the wizard, `q` cancels. Do not treat cancellation as a selected default.
 

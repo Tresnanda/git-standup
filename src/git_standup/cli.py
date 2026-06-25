@@ -946,6 +946,17 @@ def _picker_window(cursor: int, option_count: int) -> tuple[int, int, bool]:
     return start, start + page_size, True
 
 
+def _matches_search(value: str, query: str) -> bool:
+    return query.casefold() in value.casefold()
+
+
+def _is_search_text_key(key: str) -> bool:
+    return len(key) == 1 and key.isprintable() and key not in {"\r", "\n", "\t"}
+
+
+_BACKSPACE_KEYS = {"\x7f", "\b", "\x08"}
+
+
 def _interactive_choice(
     title: str,
     options: list[tuple[str, str, str]],
@@ -961,14 +972,36 @@ def _interactive_choice(
         0,
     )
     rendered_lines = 0
+    search = ""
+    searching = False
+
+    def visible_indices() -> list[int]:
+        if not search:
+            return list(range(len(options)))
+        return [
+            index
+            for index, option in enumerate(options)
+            if _matches_search(" ".join(option), search)
+        ]
+
+    def sync_cursor() -> list[int]:
+        nonlocal cursor
+        visible = visible_indices()
+        if visible and cursor not in visible:
+            cursor = visible[0]
+        return visible
 
     def render() -> None:
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
-        start, end, paged = _picker_window(cursor, len(options))
+        visible = sync_cursor()
+        cursor_position = visible.index(cursor) if cursor in visible else 0
+        start, end, paged = _picker_window(cursor_position, len(visible))
         print(_style(title, "1"))
-        print(_style("↑/↓ move · ⏎ select · q quit", "2"))
-        for index in range(start, end):
+        print(_style("↑/↓ move · ⏎ select · / search · q quit", "2"))
+        print(_style(f"Search: {search}", "36" if searching else "2"))
+        for position in range(start, end):
+            index = visible[position]
             _value, label, description = options[index]
             if index == cursor:
                 row = f"{_style('❯', '36')} {_style(label, '1;36')}"
@@ -978,24 +1011,49 @@ def _interactive_choice(
                 row += f"  {_style('· ' + description, '2')}"
             print(row)
         footer_lines = 0
-        if paged:
+        if not visible:
+            print(_style("No matches.", "2"))
+            footer_lines = 1
+        elif paged:
             print(_style(f"Showing {start + 1}-{end} of {len(options)}.", "2"))
             footer_lines = 1
-        rendered_lines = (end - start) + 2 + footer_lines
+        rendered_lines = (end - start) + 3 + footer_lines
 
     with _raw_terminal_session(key_reader is _read_terminal_key):
         while True:
             render()
             key = key_reader()
             if key in {"\r", "\n"}:
+                if cursor not in visible_indices():
+                    continue
                 _collapse_summary(title, options[cursor][1], rendered_lines)
                 return options[cursor][0]
-            if key.lower() == "q":
+            if searching and key in _BACKSPACE_KEYS:
+                search = search[:-1]
+                sync_cursor()
+                continue
+            if searching and key == "\x1b":
+                search = ""
+                searching = False
+                sync_cursor()
+                continue
+            if key.lower() == "q" and not searching:
                 raise _WizardCancelled
+            if key == "/" and not searching:
+                searching = True
+                continue
+            if searching and _is_search_text_key(key):
+                search += key
+                sync_cursor()
+                continue
+            visible = visible_indices()
+            if not visible:
+                continue
+            cursor_position = visible.index(cursor) if cursor in visible else 0
             if key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
-                cursor = (cursor + 1) % len(options)
+                cursor = visible[(cursor_position + 1) % len(visible)]
             elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
-                cursor = (cursor - 1) % len(options)
+                cursor = visible[(cursor_position - 1) % len(visible)]
 
 
 def _interactive_confirm(
@@ -1041,14 +1099,36 @@ def _interactive_multi_select(
     selected: set[int] = set()
     cursor = 1 if add_label and len(display) > 1 else 0
     rendered_lines = 0
+    search = ""
+    searching = False
+
+    def visible_indices() -> list[int]:
+        if not search:
+            return list(range(len(display)))
+        return [
+            index
+            for index, value in enumerate(display)
+            if index != add_index and _matches_search(value, search)
+        ]
+
+    def sync_cursor() -> list[int]:
+        nonlocal cursor
+        visible = visible_indices()
+        if visible and cursor not in visible:
+            cursor = visible[0]
+        return visible
 
     def render() -> None:
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
-        start, end, paged = _picker_window(cursor, len(display))
+        visible = sync_cursor()
+        cursor_position = visible.index(cursor) if cursor in visible else 0
+        start, end, paged = _picker_window(cursor_position, len(visible))
         print(_style(title, "1"))
-        print(_style("↑/↓ move · space select · ⏎ confirm · a all · q quit", "2"))
-        for index in range(start, end):
+        print(_style("↑/↓ move · space select · ⏎ confirm · / search · a all · q quit", "2"))
+        print(_style(f"Search: {search}", "36" if searching else "2"))
+        for position in range(start, end):
+            index = visible[position]
             pointer = _style("❯", "36") if index == cursor else " "
             if index == add_index:
                 print(f"{pointer} {display[index]}")
@@ -1056,16 +1136,19 @@ def _interactive_multi_select(
                 mark = "[x]" if index in selected else "[ ]"
                 print(f"{pointer} {mark} {display[index]}")
         footer_lines = 0
-        if paged:
+        if not visible:
+            print(_style(f"No matches. Selected: {len(selected)}.", "2"))
+            footer_lines = 1
+        elif paged:
             print(
                 _style(
-                    f"Showing {start + 1}-{end} of {len(display)}. "
+                    f"Showing {start + 1}-{end} of {len(visible)}. "
                     f"Selected: {len(selected)}.",
                     "2",
                 )
             )
             footer_lines = 1
-        rendered_lines = (end - start) + 2 + footer_lines
+        rendered_lines = (end - start) + 3 + footer_lines
 
     def chosen() -> list[str]:
         return [display[index] for index in sorted(selected)]
@@ -1086,7 +1169,8 @@ def _interactive_multi_select(
         while True:
             render()
             key = key_reader()
-            on_add_row = add_index is not None and cursor == add_index
+            visible = visible_indices()
+            on_add_row = add_index is not None and cursor == add_index and cursor in visible
             if key in {"\r", "\n"}:
                 if on_add_row:
                     trigger_add()
@@ -1094,21 +1178,40 @@ def _interactive_multi_select(
                 result = chosen()
                 _collapse_summary(title, ", ".join(result) if result else "none", rendered_lines)
                 return result
-            if key.lower() == "q":
+            if searching and key in _BACKSPACE_KEYS:
+                search = search[:-1]
+                sync_cursor()
+                continue
+            if searching and key == "\x1b":
+                search = ""
+                searching = False
+                sync_cursor()
+                continue
+            if key.lower() == "q" and not searching:
                 raise _WizardCancelled
-            if key.lower() == "a":
-                selected = {index for index in range(len(display)) if index != add_index}
+            if key == "/" and not searching:
+                searching = True
+                continue
+            if key.lower() == "a" and not searching:
+                selected = {index for index in visible_indices() if index != add_index}
             elif key in {" ", "\t"}:
                 if on_add_row:
                     trigger_add()
-                elif cursor in selected:
+                elif cursor in selected and cursor in visible:
                     selected.remove(cursor)
-                else:
+                elif cursor in visible:
                     selected.add(cursor)
+            elif searching and _is_search_text_key(key):
+                search += key
+                sync_cursor()
             elif key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
-                cursor = (cursor + 1) % len(display)
+                if visible:
+                    cursor_position = visible.index(cursor) if cursor in visible else 0
+                    cursor = visible[(cursor_position + 1) % len(visible)]
             elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
-                cursor = (cursor - 1) % len(display)
+                if visible:
+                    cursor_position = visible.index(cursor) if cursor in visible else 0
+                    cursor = visible[(cursor_position - 1) % len(visible)]
 
 
 def _interactive_tabbed_multi_select(
@@ -1124,16 +1227,35 @@ def _interactive_tabbed_multi_select(
     cursor_by_tab = {name: 0 for name, _values in tabs}
     selected: set[str] = set()
     rendered_lines = 0
+    search = ""
+    searching = False
 
     def current_tab() -> tuple[str, list[str]]:
         return tabs[tab_index]
+
+    def visible_indices(options: list[str]) -> list[int]:
+        if not search:
+            return list(range(len(options)))
+        return [
+            index
+            for index, option in enumerate(options)
+            if _matches_search(option, search)
+        ]
+
+    def sync_cursor(tab_name: str, options: list[str]) -> list[int]:
+        visible = visible_indices(options)
+        if visible and cursor_by_tab[tab_name] not in visible:
+            cursor_by_tab[tab_name] = visible[0]
+        return visible
 
     def render() -> None:
         nonlocal rendered_lines
         _move_cursor_up(rendered_lines)
         tab_name, options = current_tab()
+        visible = sync_cursor(tab_name, options)
         cursor = cursor_by_tab[tab_name]
-        start, end, paged = _picker_window(cursor, len(options))
+        cursor_position = visible.index(cursor) if cursor in visible else 0
+        start, end, paged = _picker_window(cursor_position, len(visible))
         print(_style(title, "1"))
         rendered_tabs = " | ".join(
             f"[{name}]" if index == tab_index else name
@@ -1142,55 +1264,85 @@ def _interactive_tabbed_multi_select(
         print(f"Tabs: {rendered_tabs}")
         print(
             _style(
-                "←/→ tabs · ↑/↓ move · space select · ⏎ confirm · a all · q quit",
+                "←/→ tabs · ↑/↓ move · space select · ⏎ confirm · / search · a all · q quit",
                 "2",
             )
         )
-        for index in range(start, end):
+        print(_style(f"Search: {search}", "36" if searching else "2"))
+        for position in range(start, end):
+            index = visible[position]
             repo = options[index]
             pointer = _style("❯", "36") if index == cursor else " "
             mark = "[x]" if repo in selected else "[ ]"
             print(f"{pointer} {mark} {repo}")
         footer_lines = 0
-        if paged:
+        if not visible:
+            print(_style(f"No matches. Selected: {len(selected)}.", "2"))
+            footer_lines = 1
+        elif paged:
             print(
                 _style(
-                    f"Showing {start + 1}-{end} of {len(options)}. "
+                    f"Showing {start + 1}-{end} of {len(visible)}. "
                     f"Selected: {len(selected)}.",
                     "2",
                 )
             )
             footer_lines = 1
-        rendered_lines = (end - start) + 3 + footer_lines
+        rendered_lines = (end - start) + 4 + footer_lines
 
     with _raw_terminal_session(key_reader is _read_terminal_key):
         while True:
             render()
             key = key_reader()
             tab_name, options = current_tab()
+            visible = visible_indices(options)
             cursor = cursor_by_tab[tab_name]
             if key in {"\r", "\n"}:
                 result = sorted(selected)
                 _collapse_summary(title, ", ".join(result) if result else "none", rendered_lines)
                 return result
-            if key.lower() == "q":
+            if searching and key in _BACKSPACE_KEYS:
+                search = search[:-1]
+                sync_cursor(tab_name, options)
+                continue
+            if searching and key == "\x1b":
+                search = ""
+                searching = False
+                sync_cursor(tab_name, options)
+                continue
+            if key.lower() == "q" and not searching:
                 raise _WizardCancelled
-            if key.lower() == "a":
-                selected.update(options)
+            if key == "/" and not searching:
+                searching = True
+                continue
+            if key.lower() == "a" and not searching:
+                selected.update(options[index] for index in visible)
             elif key in {" ", "\t"}:
-                repo = options[cursor]
-                if repo in selected:
-                    selected.remove(repo)
-                else:
-                    selected.add(repo)
+                if cursor in visible:
+                    repo = options[cursor]
+                    if repo in selected:
+                        selected.remove(repo)
+                    else:
+                        selected.add(repo)
+            elif searching and _is_search_text_key(key):
+                search += key
+                sync_cursor(tab_name, options)
             elif key in {"\x1b[C", "\x1bOC", "\xe0M", "\x00M", "l"}:
                 tab_index = (tab_index + 1) % len(tabs)
+                tab_name, options = current_tab()
+                sync_cursor(tab_name, options)
             elif key in {"\x1b[D", "\x1bOD", "\xe0K", "\x00K", "h"}:
                 tab_index = (tab_index - 1) % len(tabs)
+                tab_name, options = current_tab()
+                sync_cursor(tab_name, options)
             elif key in {"\x1b[B", "\x1bOB", "\xe0P", "\x00P", "j"}:
-                cursor_by_tab[tab_name] = (cursor + 1) % len(options)
+                if visible:
+                    cursor_position = visible.index(cursor) if cursor in visible else 0
+                    cursor_by_tab[tab_name] = visible[(cursor_position + 1) % len(visible)]
             elif key in {"\x1b[A", "\x1bOA", "\xe0H", "\x00H", "k"}:
-                cursor_by_tab[tab_name] = (cursor - 1) % len(options)
+                if visible:
+                    cursor_position = visible.index(cursor) if cursor in visible else 0
+                    cursor_by_tab[tab_name] = visible[(cursor_position - 1) % len(visible)]
 
 
 def _recent_authors(repo: str) -> list[str]:
