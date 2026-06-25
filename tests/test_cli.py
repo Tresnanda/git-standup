@@ -1938,6 +1938,34 @@ def test_build_wizard_args_accepts_multiple_remote_repositories() -> None:
     ]
 
 
+def test_build_wizard_args_strips_credentials_from_remote_repository_urls() -> None:
+    args = cli.build_wizard_args(
+        {
+            "remote_repos": [
+                "https://SECRET@github.com/owner/api.git",
+                "https://github.com/owner/web.git?token=SECRET",
+                "x-access-token:SECRET@github.com:owner/docs.git",
+            ],
+            "preset": "week",
+            "format": "markdown",
+            "ai": False,
+        }
+    )
+
+    assert args == [
+        "--remote-repo",
+        "owner/api",
+        "--remote-repo",
+        "owner/web",
+        "--remote-repo",
+        "owner/docs",
+        "--days",
+        "7",
+        "--markdown",
+        "--no-ai",
+    ]
+
+
 def test_build_wizard_args_emits_api_backend() -> None:
     args = cli.build_wizard_args(
         {

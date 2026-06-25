@@ -598,7 +598,7 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     remote_repos = answers.get("remote_repos")
     if isinstance(remote_repos, list) and remote_repos:
         for repo in remote_repos:
-            args.extend(["--remote-repo", str(repo)])
+            args.extend(["--remote-repo", _wizard_remote_repo_arg(str(repo))])
         if str(answers.get("remote_backend") or "clone") == "api":
             args.extend(["--remote-backend", "api"])
     else:
@@ -660,6 +660,27 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
     if output:
         args.extend(["--output", str(output)])
     return args
+
+
+def _wizard_remote_repo_arg(repo: str) -> str:
+    cleaned = repo.strip()
+    path: str | None = None
+    if "://" in cleaned:
+        parsed = urlsplit(cleaned)
+        if parsed.hostname == "github.com":
+            path = parsed.path
+    elif "@github.com:" in cleaned:
+        path = cleaned.split("@github.com:", 1)[1]
+    if path is None:
+        return cleaned
+
+    path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [part for part in path.split("/") if part]
+    if len(parts) == 2 and all(re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+        return f"{parts[0]}/{parts[1]}"
+    return cleaned
 
 
 def _today_start_string(now: datetime | None = None) -> str:
