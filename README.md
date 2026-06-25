@@ -424,7 +424,7 @@ Remote reports clone temporary copies for the run by default, then format the ou
 git-standup --remote-repo Tresnanda/api --remote-backend api --days 7 --json --no-ai
 ```
 
-API mode supports date ranges, author matching, merge exclusion, commit budgets, changed-file stats, best-effort PR links, and `--all-branches`. Git-native `--base-branch` and `--path/--pathspec` filters require clone mode.
+API mode supports date ranges, author matching, merge exclusion, commit budgets, changed-file stats, best-effort PR links, explicit `--remote-branch` filters, and `--all-branches`. Git-native `--base-branch` and `--path/--pathspec` filters require clone mode.
 
 By default only the repository's default branch is read. To include work that lives on feature or release branches (for example, commits pushed today but not yet merged to `main`), add `--all-branches`:
 
@@ -434,6 +434,12 @@ git-standup --remote-repo Tresnanda/api --remote-backend api --all-branches --au
 ```
 
 `--all-branches` works for local repositories and both remote backends. With the API backend it enumerates every branch and fetches commits per branch (more API calls), then deduplicates. It is ignored when `--base-branch` is set.
+
+For faster API-mode reports on large repositories, choose one or more branches instead of scanning every branch:
+
+```bash
+git-standup --remote-repo Tresnanda/api --remote-backend api --remote-branch main --remote-branch release/next --author me
+```
 
 ### Paste-Ready Markdown
 
@@ -457,6 +463,7 @@ Changelog mode is always non-AI. It groups conventional commits into Features, F
 usage: git-standup [-h] [--days DAYS] [--repo REPO]
                    [--remote-repo OWNER/NAME]
                    [--remote-backend {clone,api}] [--all-branches]
+                   [--remote-branch NAME]
                    [--since SINCE] [--until UNTIL] [--author AUTHOR]
                    [--base-branch BASE_BRANCH] [--max-commits MAX_COMMITS]
                    [--max-files-per-commit MAX_FILES_PER_COMMIT]
@@ -480,6 +487,8 @@ options:
                        (default) or query GitHub through gh api without cloning.
   --all-branches       Include commits from all branches, not just the default
                        branch. Works with local repos and both remote backends.
+  --remote-branch NAME Remote branch to include with --remote-backend api.
+                       Repeat for multiple branches.
   --since DATE         Start date for the report window, in YYYY-MM-DD format.
   --until DATE         End date for the report window, in YYYY-MM-DD format.
   --author AUTHOR      Filter by author. Use "me" for the current Git user.

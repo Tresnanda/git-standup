@@ -67,6 +67,7 @@ from git_standup.github_api import (
     GitHubApiRunCache,
     _normalize_repo_slug,
     get_remote_commits,
+    list_remote_branches,
     validate_remote_api_options,
 )
 from git_standup.gitlog import (
@@ -88,6 +89,7 @@ REPOSITORIES_KEY = "_repositories"
 _RAW_TERMINAL_FD: int | None = None
 _RAW_TERMINAL_COOKED: Any = None
 _ADD_CUSTOM_REPO_LABEL = "+ Add custom repo (URL or owner/name)…"
+_ALL_REMOTE_BRANCHES_LABEL = "All branches"
 
 
 class _WizardCancelled(Exception):
@@ -601,6 +603,10 @@ def build_wizard_args(answers: dict[str, object]) -> list[str]:
             args.extend(["--remote-repo", _wizard_remote_repo_arg(str(repo))])
         if str(answers.get("remote_backend") or "clone") == "api":
             args.extend(["--remote-backend", "api"])
+        remote_branches = answers.get("remote_branches")
+        if isinstance(remote_branches, list) and remote_branches:
+            for branch in remote_branches:
+                args.extend(["--remote-branch", str(branch)])
     else:
         repo = str(answers.get("repo") or ".")
         if repo != ".":
@@ -908,13 +914,17 @@ def _wizard_separator() -> None:
 
 
 @contextmanager
-def _spinner(message: str):
+def _spinner(message: str, *, stderr: bool = False, persistent: bool = False):
     """Show an animated spinner on a TTY, else print the message once."""
-    if sys.stdout.isatty():
-        with Console().status(message, spinner="dots"):
+    stream = sys.stderr if stderr else sys.stdout
+    if persistent:
+        print(message, file=stream)
+    if stream.isatty():
+        with Console(stderr=stderr).status(message, spinner="dots"):
             yield
     else:
-        print(message)
+        if not persistent:
+            print(message, file=stream)
         yield
 
 
@@ -1320,6 +1330,30 @@ def _parse_remote_repo_selection(raw: str, repos: list[str]) -> list[str]:
 def _prompt_custom_repos() -> list[str]:
     raw = Prompt.ask("Custom repo (URL or owner/name, comma-separated)", default="")
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _choose_remote_branches(remote_repo: str) -> tuple[bool, list[str]]:
+    try:
+        branches = list_remote_branches(remote_repo)
+    except RuntimeError as exc:
+        print(f"Could not fetch branches: {exc}")
+        return False, []
+    if not branches:
+        return False, []
+
+    options = [_ALL_REMOTE_BRANCHES_LABEL] + branches
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        selected = _interactive_multi_select("Choose branches", options)
+    else:
+        print("\nChoose branches:")
+        for index, branch in enumerate(options, start=1):
+            print(f"  {index}) {branch}")
+        raw = Prompt.ask("Branch choices (comma-separated numbers or names)", default="")
+        selected = _parse_remote_repo_selection(raw, options)
+
+    if _ALL_REMOTE_BRANCHES_LABEL in selected:
+        return True, []
+    return False, selected
 
 
 def _choose_remote_repositories() -> list[str]:
@@ -1815,6 +1849,7 @@ def run_wizard() -> int:
         remote_repos: list[str] = []
         remote_backend = "clone"
         all_branches = False
+        remote_branches: list[str] = []
         if repo_source == "other":
             repo = Prompt.ask("Repository path", default=".")
         elif repo_source == "remote":
@@ -1835,10 +1870,13 @@ def run_wizard() -> int:
                 ],
                 "clone",
             )
-            all_branches = _confirm(
-                "Include work on all branches, not just the default branch?",
-                default=True,
-            )
+            if remote_backend == "api" and len(remote_repos) == 1:
+                all_branches, remote_branches = _choose_remote_branches(remote_repos[0])
+            else:
+                all_branches = _confirm(
+                    "Include work on all branches, not just the default branch?",
+                    default=True,
+                )
 
         _wizard_separator()
         preset = _numbered_choice(
@@ -1870,6 +1908,8 @@ def run_wizard() -> int:
             answers["remote_repos"] = remote_repos
             answers["remote_backend"] = remote_backend
             answers["all_branches"] = all_branches
+            if remote_branches:
+                answers["remote_branches"] = remote_branches
         if author_choice == "me":
             answers["author"] = "me"
         elif author_choice == "custom":
@@ -2060,6 +2100,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Include commits from all branches, not just the default branch "
             "(works with local repos and both remote backends)"
+        ),
+    )
+    parser.add_argument(
+        "--remote-branch",
+        dest="remote_branches",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Remote branch to include with --remote-backend api. Repeat for multiple "
+            "branches."
         ),
     )
     parser.add_argument(
@@ -2359,6 +2410,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--insights cannot be combined with --team-digest")
     if args.remote_repos and args.repo is not None:
         parser.error("--remote-repo cannot be combined with --repo or a positional repo path")
+    if args.remote_branches and not args.remote_repos:
+        parser.error("--remote-branch requires --remote-repo")
+    if args.remote_branches and args.remote_backend != "api":
+        parser.error("--remote-branch requires --remote-backend api")
+    if args.remote_branches and args.all_branches:
+        parser.error("--remote-branch cannot be combined with --all-branches")
     del args.tokens
     return args
 
@@ -2447,19 +2504,25 @@ def main(argv: list[str] | None = None) -> int:
                     repo_since = args.since
                     if args.since_last:
                         repo_since = since_by_checkpoint_id[remote_repository_id(repo_name)]
-                    fetched = get_remote_commits(
-                        remote_repo,
-                        days=args.days,
-                        author=args.author,
-                        since=repo_since,
-                        until=checkpoint_until,
-                        max_commits=commit_fetch_limit,
-                        exclude_merges=args.exclude_merges,
-                        all_branches=args.all_branches,
-                        include_prs=args.include_prs,
-                        author_aliases=author_aliases,
-                        cache=api_cache,
-                    )
+                    with _spinner(
+                        f"Fetching {repo_name} from GitHub API…",
+                        stderr=True,
+                        persistent=True,
+                    ):
+                        fetched = get_remote_commits(
+                            remote_repo,
+                            days=args.days,
+                            author=args.author,
+                            since=repo_since,
+                            until=checkpoint_until,
+                            max_commits=commit_fetch_limit,
+                            exclude_merges=args.exclude_merges,
+                            all_branches=args.all_branches,
+                            remote_branches=args.remote_branches,
+                            include_prs=args.include_prs,
+                            author_aliases=author_aliases,
+                            cache=api_cache,
+                        )
                     repo_stats = api_cache.repositories.get(_normalize_repo_slug(remote_repo))
                     if not fetched and repo_stats and repo_stats.get("rate_limited"):
                         continue

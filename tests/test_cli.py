@@ -577,6 +577,32 @@ def test_multi_remote_api_json_includes_per_repository_budget_metadata(
     assert [commit["hash"] for commit in commits] == ["Tresnanda/api-1"]
 
 
+def test_remote_api_backend_prints_fetch_progress_to_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail_clone(*_args: object, **_kwargs: object) -> Path:
+        raise AssertionError("API backend must not clone remote repositories")
+
+    monkeypatch.setattr(cli, "_clone_remote_repo", fail_clone)
+    monkeypatch.setattr(cli, "get_remote_commits", lambda *_args, **_kwargs: _sample_commits())
+
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "Tresnanda/api",
+            "--remote-backend",
+            "api",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert json.loads(captured.out)["_metadata"]["repository"]["backend"] == "api"
+    assert "Fetching Tresnanda/api from GitHub API" in captured.err
+
+
 def test_github_api_author_filter_treats_alias_email_literals() -> None:
     item = {
         "commit": {
@@ -2007,6 +2033,33 @@ def test_build_wizard_args_emits_all_branches() -> None:
     assert "--all-branches" in args
 
 
+def test_build_wizard_args_emits_remote_branches() -> None:
+    args = cli.build_wizard_args(
+        {
+            "remote_repos": ["owner/api"],
+            "remote_backend": "api",
+            "remote_branches": ["main", "feature/x"],
+            "preset": "week",
+            "format": "markdown",
+            "ai": True,
+        }
+    )
+
+    assert args == [
+        "--remote-repo",
+        "owner/api",
+        "--remote-backend",
+        "api",
+        "--remote-branch",
+        "main",
+        "--remote-branch",
+        "feature/x",
+        "--days",
+        "7",
+        "--markdown",
+    ]
+
+
 def test_build_wizard_args_text_with_ai_is_the_default_report() -> None:
     args = cli.build_wizard_args(
         {"repo": ".", "preset": "week", "author": "me", "format": "text", "ai": True}
@@ -2193,6 +2246,61 @@ def test_run_wizard_starts_with_repository_source_and_remote_multi_select(
         "Generated command:\n  git-standup --remote-repo Tresnanda/api "
         "--remote-repo Tresnanda/web --all-branches --days 7 --markdown"
     ) in out
+
+
+def test_run_wizard_api_remote_uses_branch_picker(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # repo source -> remote(3), repo -> 1, backend -> api(2), branches -> main+feature(2,3),
+    # preset -> week(2), author -> all(1), format -> markdown(1)
+    answers = iter(["3", "1", "2", "2,3", "2", "1", "1"])
+    # Polish with AI? -> yes, Save? -> no, Run it now -> no
+    confirms = iter([True, False, False])
+
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *_args, **_kwargs: next(answers))
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *_args, **_kwargs: next(confirms))
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
+    monkeypatch.setattr(
+        cli,
+        "_remote_repository_groups",
+        lambda: {"Owned": ["Tresnanda/api"], "Organizations": [], "Collaborator": []},
+    )
+    monkeypatch.setattr(cli, "list_remote_branches", lambda _repo: ["main", "feature/x"])
+
+    assert cli.run_wizard() == 0
+
+    out = capsys.readouterr().out
+    assert "Choose branches:" in out
+    assert "1) All branches" in out
+    assert "2) main" in out
+    assert "3) feature/x" in out
+    assert (
+        "Generated command:\n  git-standup --remote-repo Tresnanda/api --remote-backend api "
+        "--remote-branch main --remote-branch feature/x --days 7 --markdown"
+    ) in out
+
+
+def test_choose_remote_branches_uses_tui_multi_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_multi_select(title: str, options: list[str]) -> list[str]:
+        captured["title"] = title
+        captured["options"] = options
+        return ["main", "feature/x"]
+
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "list_remote_branches", lambda _repo: ["main", "feature/x"])
+    monkeypatch.setattr(cli, "_interactive_multi_select", fake_multi_select)
+
+    assert cli._choose_remote_branches("owner/api") == (False, ["main", "feature/x"])
+    assert captured == {
+        "title": "Choose branches",
+        "options": ["All branches", "main", "feature/x"],
+    }
 
 
 def test_run_wizard_asks_timeframe_then_author_then_format(
@@ -2565,6 +2673,36 @@ def test_parse_args_accepts_all_branches() -> None:
     assert args.all_branches is True
 
 
+def test_parse_args_accepts_remote_branches() -> None:
+    args = cli.parse_args(
+        [
+            "--remote-repo",
+            "owner/name",
+            "--remote-backend",
+            "api",
+            "--remote-branch",
+            "main",
+            "--remote-branch",
+            "feature/x",
+        ]
+    )
+
+    assert args.remote_branches == ["main", "feature/x"]
+
+
+def test_parse_args_rejects_remote_branch_with_all_branches() -> None:
+    with pytest.raises(SystemExit):
+        cli.parse_args(
+            [
+                "--remote-repo",
+                "owner/name",
+                "--all-branches",
+                "--remote-branch",
+                "main",
+            ]
+        )
+
+
 def test_api_backend_supports_all_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2589,6 +2727,35 @@ def test_api_backend_supports_all_branches(
     )
     assert exit_code == 0
     assert captured["all_branches"] is True
+
+
+def test_api_backend_passes_remote_branches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_get_remote_commits(repo, **kwargs):
+        captured.update(kwargs)
+        return _sample_commits()
+
+    monkeypatch.setattr(cli, "detect_ai_environment", lambda _env: dict(_AI_AVAILABLE))
+    monkeypatch.setattr(cli, "get_remote_commits", fake_get_remote_commits)
+    exit_code = cli.main(
+        [
+            "--remote-repo",
+            "owner/name",
+            "--remote-backend",
+            "api",
+            "--remote-branch",
+            "main",
+            "--remote-branch",
+            "feature/x",
+            "--no-ai",
+            "--markdown",
+        ]
+    )
+    assert exit_code == 0
+    assert captured["remote_branches"] == ["main", "feature/x"]
 
 
 def test_clone_backend_passes_all_branches_to_get_commits(

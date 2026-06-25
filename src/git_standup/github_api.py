@@ -1,11 +1,14 @@
 """GitHub API-backed commit retrieval for remote repositories."""
 
 import json
+import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
+from threading import RLock
 from typing import Any
 
 from git_standup.author_aliases import AuthorAliases
@@ -33,6 +36,7 @@ class GitHubApiRunCache:
     pull_request_enrichments_skipped: int = 0
     repositories: dict[str, dict[str, int | bool]] = field(default_factory=dict)
     default_since: str | None = None
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False, compare=False)
 
     def key(
         self,
@@ -47,62 +51,67 @@ class GitHubApiRunCache:
         )
 
     def repo_stats(self, repo_slug: str) -> dict[str, int | bool]:
-        return self.repositories.setdefault(
-            repo_slug,
-            {
-                "commit_details_skipped": 0,
-                "pull_request_enrichments_skipped": 0,
-                "rate_limited": False,
-            },
-        )
+        with self._lock:
+            return self.repositories.setdefault(
+                repo_slug,
+                {
+                    "commit_details_skipped": 0,
+                    "pull_request_enrichments_skipped": 0,
+                    "rate_limited": False,
+                },
+            )
 
     def mark_rate_limited(self, repo_slug: str | None = None) -> None:
-        self.rate_limited = True
-        if repo_slug:
-            self.repo_stats(repo_slug)["rate_limited"] = True
+        with self._lock:
+            self.rate_limited = True
+            if repo_slug:
+                self.repo_stats(repo_slug)["rate_limited"] = True
 
     def record_commit_detail_skip(self, repo_slug: str) -> None:
-        self.commit_details_skipped += 1
-        stats = self.repo_stats(repo_slug)
-        stats["commit_details_skipped"] = int(stats["commit_details_skipped"]) + 1
+        with self._lock:
+            self.commit_details_skipped += 1
+            stats = self.repo_stats(repo_slug)
+            stats["commit_details_skipped"] = int(stats["commit_details_skipped"]) + 1
 
     def record_pull_request_skip(self, repo_slug: str) -> None:
-        self.pull_request_enrichments_skipped += 1
-        stats = self.repo_stats(repo_slug)
-        stats["pull_request_enrichments_skipped"] = (
-            int(stats["pull_request_enrichments_skipped"]) + 1
-        )
+        with self._lock:
+            self.pull_request_enrichments_skipped += 1
+            stats = self.repo_stats(repo_slug)
+            stats["pull_request_enrichments_skipped"] = (
+                int(stats["pull_request_enrichments_skipped"]) + 1
+            )
 
     def metadata(self) -> dict[str, Any] | None:
         """Return optional metadata for JSON/AI when caching or rate-limit skips matter."""
-        if not (
-            self.hits
-            or self.rate_limited
-            or self.commit_details_skipped
-            or self.pull_request_enrichments_skipped
-        ):
-            return None
+        with self._lock:
+            if not (
+                self.hits
+                or self.rate_limited
+                or self.commit_details_skipped
+                or self.pull_request_enrichments_skipped
+            ):
+                return None
 
-        metadata: dict[str, Any] = {
-            "cache": {
-                "hits": self.hits,
-                "misses": self.misses,
-            },
-            "rate_limit": {
-                "limited": self.rate_limited,
-                "commit_detail_requests_skipped": self.commit_details_skipped,
-                "pull_request_enrichments_skipped": self.pull_request_enrichments_skipped,
-            },
-        }
-        if self.repositories:
-            metadata["repositories"] = {
-                repo: stats
-                for repo, stats in self.repositories.items()
-                if stats.get("rate_limited")
-                or stats.get("commit_details_skipped")
-                or stats.get("pull_request_enrichments_skipped")
+            metadata: dict[str, Any] = {
+                "cache": {
+                    "hits": self.hits,
+                    "misses": self.misses,
+                },
+                "rate_limit": {
+                    "limited": self.rate_limited,
+                    "commit_detail_requests_skipped": self.commit_details_skipped,
+                    "pull_request_enrichments_skipped": self.pull_request_enrichments_skipped,
+                },
             }
-        return metadata
+            if self.repositories:
+                metadata["repositories"] = {
+                    repo: dict(stats)
+                    for repo, stats in self.repositories.items()
+                    if stats.get("rate_limited")
+                    or stats.get("commit_details_skipped")
+                    or stats.get("pull_request_enrichments_skipped")
+                }
+            return metadata
 
 
 def get_remote_commits(
@@ -115,6 +124,7 @@ def get_remote_commits(
     max_commits: int | None = None,
     exclude_merges: bool = False,
     all_branches: bool = False,
+    remote_branches: list[str] | None = None,
     include_prs: bool = False,
     author_aliases: AuthorAliases | None = None,
     cache: GitHubApiRunCache | None = None,
@@ -152,7 +162,17 @@ def get_remote_commits(
     if until:
         base_params["until"] = _to_github_datetime(until, end_of_day=True)
 
-    if all_branches:
+    if remote_branches:
+        matching_items = _collect_all_branch_items(
+            run_cache,
+            repo_slug,
+            base_params=base_params,
+            author_filter=author_filter,
+            exclude_merges=exclude_merges,
+            max_commits=max_commits,
+            branch_names=remote_branches,
+        )
+    elif all_branches:
         matching_items = _collect_all_branch_items(
             run_cache,
             repo_slug,
@@ -171,10 +191,23 @@ def get_remote_commits(
             max_commits=max_commits,
         )
 
-    return [
-        _commit_from_api_item(repo_slug, item, include_prs=include_prs, cache=run_cache)
-        for item in matching_items
-    ]
+    if len(matching_items) <= 1:
+        return [
+            _commit_from_api_item(repo_slug, item, include_prs=include_prs, cache=run_cache)
+            for item in matching_items
+        ]
+    with ThreadPoolExecutor(max_workers=min(16, len(matching_items))) as executor:
+        futures = [
+            executor.submit(
+                _commit_from_api_item,
+                repo_slug,
+                item,
+                include_prs=include_prs,
+                cache=run_cache,
+            )
+            for item in matching_items
+        ]
+        return [future.result() for future in futures]
 
 
 def _collect_ref_commit_items(
@@ -254,6 +287,11 @@ def _list_branch_names(run_cache: GitHubApiRunCache, repo_slug: str) -> list[str
     return names
 
 
+def list_remote_branches(repo: str, *, cache: GitHubApiRunCache | None = None) -> list[str]:
+    """Return branch names for a GitHub repository through the API backend."""
+    return _list_branch_names(cache or GitHubApiRunCache(), _normalize_repo_slug(repo))
+
+
 def _api_item_commit_date(item: dict[str, Any]) -> str:
     commit = _as_dict(item.get("commit"))
     author = _as_dict(commit.get("author"))
@@ -268,6 +306,7 @@ def _collect_all_branch_items(
     author_filter: str | None,
     exclude_merges: bool,
     max_commits: int | None,
+    branch_names: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Collect deduplicated commit items across every branch of a repository.
 
@@ -276,19 +315,36 @@ def _collect_all_branch_items(
     branches already collected are kept rather than failing the whole run.
     """
     seen: dict[str, dict[str, Any]] = {}
+    collected_by_branch: dict[int, list[dict[str, Any]]] = {}
     try:
-        for branch in _list_branch_names(run_cache, repo_slug):
-            if run_cache.rate_limited:
-                break
-            for item in _collect_ref_commit_items(
-                run_cache,
-                repo_slug,
-                base_params=base_params,
-                author_filter=author_filter,
-                exclude_merges=exclude_merges,
-                max_commits=max_commits,
-                sha=branch,
-            ):
+        branches = (
+            branch_names
+            if branch_names is not None
+            else _list_branch_names(run_cache, repo_slug)
+        )
+        with ThreadPoolExecutor(max_workers=min(16, max(1, len(branches)))) as executor:
+            futures = {
+                executor.submit(
+                    _collect_ref_commit_items,
+                    run_cache,
+                    repo_slug,
+                    base_params=base_params,
+                    author_filter=author_filter,
+                    exclude_merges=exclude_merges,
+                    max_commits=max_commits,
+                    sha=branch,
+                ): index
+                for index, branch in enumerate(branches)
+                if not run_cache.rate_limited
+            }
+            for future in as_completed(futures):
+                try:
+                    collected_by_branch[futures[future]] = future.result()
+                except GitHubRateLimitError:
+                    run_cache.mark_rate_limited(repo_slug)
+
+        for index in sorted(collected_by_branch):
+            for item in collected_by_branch[index]:
                 sha = str(item.get("sha") or "")
                 if sha and sha not in seen:
                     seen[sha] = item
@@ -540,15 +596,16 @@ def _cached_gh_api_json(
     repo_slug: str | None = None,
 ) -> object:
     key = cache.key(endpoint, params, headers)
-    if key in cache.responses:
-        cache.hits += 1
-        return cache.responses[key]
+    with cache._lock:
+        if key in cache.responses:
+            cache.hits += 1
+            return cache.responses[key]
 
-    if cache.rate_limited:
-        cache.mark_rate_limited(repo_slug)
-        raise GitHubRateLimitError("GitHub API rate limit active; skipping uncached request")
+        if cache.rate_limited:
+            cache.mark_rate_limited(repo_slug)
+            raise GitHubRateLimitError("GitHub API rate limit active; skipping uncached request")
 
-    cache.misses += 1
+        cache.misses += 1
     try:
         value = _gh_api_json(endpoint, params=params, headers=headers)
     except GitHubRateLimitError:
@@ -559,13 +616,35 @@ def _cached_gh_api_json(
             cache.mark_rate_limited(repo_slug)
             raise GitHubRateLimitError(str(exc)) from exc
         raise
-    cache.responses[key] = value
+    with cache._lock:
+        cache.responses[key] = value
     return value
 
 
 def _is_rate_limit_error(message: str) -> bool:
     lowered = message.lower()
     return "rate limit" in lowered or "secondary rate" in lowered or "too many requests" in lowered
+
+
+def _github_auth_hint(message: str) -> str:
+    if "bad credentials" not in message.lower() and "http 401" not in message.lower():
+        return ""
+    env_names = [
+        name
+        for name in (
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+        )
+        if os.environ.get(name)
+    ]
+    if env_names:
+        return (
+            f" {'/'.join(env_names)} is set and may override `gh auth` keyring credentials; "
+            "unset it or refresh it."
+        )
+    return " Run `gh auth status` and refresh or re-login if the token is stale."
 
 
 def _gh_api_json(
@@ -606,7 +685,7 @@ def _gh_api_json(
         message = f"GitHub API request failed for {endpoint}{detail}"
         if _is_rate_limit_error(message):
             raise GitHubRateLimitError(message)
-        raise RuntimeError(message)
+        raise RuntimeError(message + _github_auth_hint(message))
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:

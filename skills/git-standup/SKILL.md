@@ -124,6 +124,26 @@ Multiple GitHub repositories:
 git-standup --no-wizard --remote-repo owner/api --remote-repo owner/web --markdown
 ```
 
+Remote GitHub API mode, no local clone:
+
+```bash
+git-standup --no-wizard --remote-repo owner/api --remote-backend api --days 7 --markdown
+```
+
+Remote branch selection:
+
+```bash
+git-standup --no-wizard --remote-repo owner/api --remote-backend api --remote-branch main --remote-branch release/next --markdown
+```
+
+Remote repository note: `--remote-repo` uses temporary clone mode by default.
+Clone mode supports git-native filters such as `--base-branch` and `--path`.
+GitHub API mode avoids cloning and supports date ranges, author matching, merge
+exclusion, commit budgets, changed-file stats, PR links, `--remote-branch`, and
+`--all-branches`. Prefer explicit `--remote-branch` filters when the user knows
+the branch names; `--all-branches` can be much slower on repositories with many
+branches.
+
 ## Output Modes
 
 - `--markdown`: best for GitHub, Slack, Notion, OSS updates, and PR notes.
@@ -184,8 +204,10 @@ git-standup
 The wizard supports:
 
 - current directory, another local directory, or remote GitHub repositories
+- clone or GitHub API remote backends
 - remote GitHub repositories grouped into owned, organization, and collaborator
   tabs in interactive terminals
+- a TUI branch chooser for a single GitHub API remote repository
 - today, last 7 days, custom range, or branch comparison
 - everyone, current user, or selected authors
 - Markdown, plain text, JSON, or changelog output
@@ -193,6 +215,19 @@ The wizard supports:
 - long author/repository pickers with a bounded viewport
 
 In the wizard, `q` cancels. Do not treat cancellation as a selected default.
+
+## GitHub API Troubleshooting
+
+GitHub API mode requires the GitHub CLI (`gh`) with valid credentials. If the
+command fails with `Bad credentials` or HTTP 401, check:
+
+```bash
+gh auth status
+```
+
+Then refresh login with `gh auth login` or remove/replace stale token environment
+variables such as `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, or
+`GITHUB_ENTERPRISE_TOKEN`. Do not print token values.
 
 ## Quality Guardrails
 

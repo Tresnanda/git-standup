@@ -1,4 +1,7 @@
 import json
+import subprocess
+import time
+from threading import Lock
 from typing import Any
 
 import pytest
@@ -21,6 +24,29 @@ def _api_commit(sha: str, *, message: str | None = None) -> dict[str, object]:
             "message": message or f"Commit {sha}",
         },
     }
+
+
+def test_gh_api_json_explains_bad_credentials_from_env_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "stale-token")
+    monkeypatch.setattr(github_api.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        github_api.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["gh"], 1, "", "gh: Bad credentials (HTTP 401)"
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        github_api._gh_api_json("/repos/owner/api/commits")
+
+    message = str(excinfo.value)
+    assert "Bad credentials" in message
+    assert "GH_TOKEN" in message
+    assert "unset it or refresh it" in message
+    assert "stale-token" not in message
 
 
 def test_get_remote_commits_reuses_per_run_api_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,6 +336,40 @@ def test_validate_remote_api_options_allows_all_branches() -> None:
     validate_remote_api_options(base_branch=None, pathspecs=None)
 
 
+def test_get_remote_commits_remote_branches_fetches_only_selected_refs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commit_calls: list[str] = []
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        del headers
+        if endpoint == "/repos/Tresnanda/api/branches":
+            raise AssertionError("explicit branch selection must not enumerate all branches")
+        if endpoint == "/repos/Tresnanda/api/commits":
+            sha = str((params or {}).get("sha") or "")
+            commit_calls.append(sha)
+            return [_api_commit(sha)]
+        if endpoint.startswith("/repos/Tresnanda/api/commits/"):
+            return {**_api_commit(endpoint.rsplit("/", 1)[-1]), "files": []}
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+
+    commits = get_remote_commits(
+        "Tresnanda/api",
+        since="2026-03-01",
+        remote_branches=["main", "feature/x"],
+    )
+
+    assert sorted(commit_calls) == ["feature/x", "main"]
+    assert sorted(commit["hash"] for commit in commits) == ["feature/x", "main"]
+
+
 def test_get_remote_commits_all_branches_dedupes_across_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -346,6 +406,85 @@ def test_get_remote_commits_all_branches_dedupes_across_branches(
 
     hashes = sorted(commit["hash"] for commit in commits)
     assert hashes == ["aaa", "ccc", "shared"]
+
+
+def test_get_remote_commits_all_branches_fetches_branches_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    max_active = 0
+    lock = Lock()
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        nonlocal active, max_active
+        del headers
+        if endpoint == "/repos/Tresnanda/api/branches":
+            return [{"name": name} for name in ("main", "feature-a", "feature-b", "release")]
+        if endpoint == "/repos/Tresnanda/api/commits":
+            sha = str((params or {}).get("sha") or "")
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.03)
+                return [_api_commit(sha)]
+            finally:
+                with lock:
+                    active -= 1
+        if endpoint.startswith("/repos/Tresnanda/api/commits/"):
+            return {**_api_commit(endpoint.rsplit("/", 1)[-1]), "files": []}
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+
+    commits = get_remote_commits(
+        "Tresnanda/api", since="2026-03-01", all_branches=True, max_commits=4
+    )
+
+    assert len(commits) == 4
+    assert max_active > 1
+
+
+def test_get_remote_commits_fetches_commit_details_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    max_active = 0
+    lock = Lock()
+
+    def fake_gh_api_json(
+        endpoint: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        headers: list[str] | None = None,
+    ) -> object:
+        nonlocal active, max_active
+        del params, headers
+        if endpoint == "/repos/Tresnanda/api/commits":
+            return [_api_commit(sha) for sha in ("aaa", "bbb", "ccc", "ddd")]
+        if endpoint.startswith("/repos/Tresnanda/api/commits/"):
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.03)
+                return {**_api_commit(endpoint.rsplit("/", 1)[-1]), "files": []}
+            finally:
+                with lock:
+                    active -= 1
+        raise AssertionError(f"unexpected endpoint: {endpoint}")
+
+    monkeypatch.setattr(github_api, "_gh_api_json", fake_gh_api_json)
+
+    commits = get_remote_commits("Tresnanda/api", since="2026-03-01")
+
+    assert [commit["hash"] for commit in commits] == ["aaa", "bbb", "ccc", "ddd"]
+    assert max_active > 1
 
 
 def test_get_remote_commits_all_branches_stops_on_rate_limit(
